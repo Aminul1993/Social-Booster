@@ -61,8 +61,8 @@ _DECLARED_TYPE_ALIASES: dict[str, ImageFormat | None] = {
     "": None,
 }
 
-#: Short side (px) of the preview handed to the vision model. ResNet-50 resizes
-#: to 232-256 px before its 224 px crop, so more detail than this is never used.
+#: Short side (px) of the preview handed to the vision model: plenty for a
+#: one-sentence description and only ~50-100 kB as the JPEG sent to it.
 PREVIEW_SIZE = 512
 
 

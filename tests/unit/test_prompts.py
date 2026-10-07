@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from services.prompts import SYSTEM_PROMPT, CopyRequest, Tone, build_copy_messages
+from services.prompts import (
+    DESCRIBE_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    CopyRequest,
+    Tone,
+    build_copy_messages,
+    build_describe_messages,
+)
 
 
 def test_messages_embed_keywords_tone_and_limits() -> None:
@@ -43,3 +50,24 @@ def test_every_tone_has_label_and_description(tone: Tone) -> None:
 def test_request_validation(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError, match=r"keyword|hashtag|caption_max_chars"):
         CopyRequest(**kwargs)  # type: ignore[arg-type]
+
+
+def test_description_is_background_data() -> None:
+    request = CopyRequest(keywords=("dog",), description='A dog says "hi" on a lawn.')
+    content = build_copy_messages(request)[1]["content"]
+    assert (
+        'what the photo shows (if it conflicts with the keywords, follow the keywords): "A dog says \\"hi\\" on a lawn."'
+        in content
+    )
+    without = build_copy_messages(CopyRequest(keywords=("dog",)))[1]["content"]
+    assert "what the photo shows" not in without
+    assert '["dog"]\nTone of voice' in without
+
+
+def test_describe_messages_attach_the_image() -> None:
+    system, user = build_describe_messages("QUJD", max_keywords=6)
+    assert system == {"role": "system", "content": DESCRIBE_SYSTEM_PROMPT}
+    assert user["images"] == ["QUJD"]
+    assert "up to 6 short lowercase keywords" in user["content"]
+    assert '"description"' in user["content"]
+    assert '"keywords"' in user["content"]

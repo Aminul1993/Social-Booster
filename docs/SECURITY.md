@@ -27,15 +27,16 @@ the operational practices expected in production.
 | **Decompression bombs / huge files** | Per-file byte limit enforced while streaming, explicit pixel budget checked before decoding, Pillow's bomb warning escalated to an error, global request body limit (413). | `app/validation.py`, `services/images.py`, `app/middleware.py` |
 | **Path traversal** | Original filenames are only displayed (sanitised, HTML-escaped); storage keys must match `^[0-9a-f]{32}\.(jpg|png|webp)$`. | `services/storage.py` |
 | **Privacy leaks via EXIF/GPS** | All metadata removed on re-encode; orientation applied first. | `services/images.py` |
+| **Images shared with the vision provider** | With `VISION_BACKEND=ollama` (default) a <=512 px JPEG preview of each upload, already stripped of metadata, is sent to `VISION_ENDPOINT` (Ollama Cloud by default) over HTTPS with the API key server-side; the model's reply is treated as data (JSON-parsed, normalised, escaped, and JSON-quoted when reused in the copy prompt). Set `VISION_BACKEND=disabled` to keep images on the server. | `services/vision.py`, `services/prompts.py` |
 | **XSS** | Jinja2 autoescaping; toasts use `textContent`; JSON in attributes via `tojson`; strict **CSP** (`script-src 'self'`, `style-src 'self'`, no inline code, `object-src 'none'`, `frame-ancestors 'none'`); HTMX `allowEval=false`, `allowScriptTags=false`, `attributesToSettle` excludes `style`. | `templates/`, `static/js/app.js`, `app/middleware.py`, `app/templating.py` |
 | **Clickjacking** | `X-Frame-Options: DENY` and `frame-ancestors 'none'`. | `app/middleware.py` |
 | **Brute force / abuse / cost blow-up** | Token-bucket rate limits per IP for upload, generate, schedule, auth and other writes; bounded files per request, drafts per session; `OLLAMA_MAX_TOKENS` caps AI spend; vision concurrency limited by a semaphore. | `app/rate_limit.py`, `app/config.py` |
-| **Denial of service through CPU-heavy inference** | Inference off the event loop on a bounded thread pool, per-image timeout, `torch.set_num_threads` sizing. | `services/vision.py` |
+| **Denial of service through image analysis** | Vision requests bounded per worker by a semaphore with a per-image time budget; inference happens at the provider, not on the server's CPU. | `services/vision.py` |
 | **Duplicate posts** | Posting is only retried when the connection failed before sending; re-sending an already published draft asks for confirmation. | `services/buffer.py`, `templates/_card.html` |
 | **Host header attacks** | `ALLOWED_HOSTS` (TrustedHostMiddleware); public URLs come from `PUBLIC_BASE_URL` in production. | `app/main.py`, `app/views.py` |
 | **Information leakage in errors** | Generic messages with a request id; stack traces only in logs; `/docs` disabled in production. | `app/error_handlers.py` |
 | **Stale data** | Drafts/images purged after `DRAFT_RETENTION_HOURS`; tokens of expired sessions purged. | `app/container.py` |
-| **Supply chain** | Exact dependency pins, CPU-only PyTorch index, front-end assets vendored (no CDN at runtime), CI on every change. | `requirements*.txt`, `static/vendor/`, `.github/workflows/ci.yml` |
+| **Supply chain** | Exact dependency pins, no ML runtime (small dependency set), front-end assets vendored (no CDN at runtime), CI on every change. | `requirements*.txt`, `static/vendor/`, `.github/workflows/ci.yml` |
 | **Container escape / privilege** | Non-root user (uid 10001), read-only root filesystem, `no-new-privileges`, all capabilities dropped. | `Dockerfile`, `docker-compose.yml` |
 
 ## Response headers

@@ -27,7 +27,7 @@ DraftId = Annotated[str, Path(pattern=r"^[0-9a-f]{32}$", description="Draft iden
     summary="Upload images",
     description=(
         "Accepts one or more JPEG/PNG/WebP images (multipart field `files`). Each file is "
-        "validated, sanitised, stored and tagged by ResNet-50. Returns one card fragment per "
+        "validated, sanitised, stored and described by the vision model. Returns one card per "
         "accepted image; rejected files are reported in an `HX-Trigger` toast."
     ),
 )

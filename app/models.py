@@ -43,11 +43,6 @@ class Label(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1, max_length=128)
-    score: float = Field(ge=0.0, le=1.0)
-
-    @property
-    def percent(self) -> int:
-        return round(self.score * 100)
 
 
 class PublishRecord(BaseModel):
@@ -75,6 +70,7 @@ class Draft(BaseModel):
     height: int
     size_bytes: int
     labels: list[Label] = Field(default_factory=list)
+    description: str | None = None
     vision_error: str | None = None
     keywords: list[str] = Field(default_factory=list)
     tone: Tone = Tone.FRIENDLY

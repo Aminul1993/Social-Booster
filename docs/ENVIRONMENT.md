@@ -57,19 +57,21 @@ pages. Invalid values stop the application at start-up with a clear message.
 | `IMAGE_MAX_DIMENSION` | `2048` | Larger images are downscaled (aspect ratio kept) so their longer side is at most this many pixels before they are stored and published. JPEGs are decoded at reduced scale, so big photos never sit in memory at full size. `0` keeps the original size. |
 | `IMAGE_MAX_CONCURRENCY` | `1` | Images decoded and re-encoded at once per worker, across all requests; the rest of a batch waits on disk. Raise for throughput only if memory allows. |
 
-## Vision (ResNet-50)
+## Vision (image description)
 
 | Variable | Default | Description |
 |---|---|---|
-| `VISION_BACKEND` | `resnet50` | `resnet50` or `disabled` (users type keywords). |
-| `VISION_WEIGHTS` | `IMAGENET1K_V2` | `ResNet50_Weights` member (`IMAGENET1K_V1`, `IMAGENET1K_V2`, `DEFAULT`). |
-| `VISION_TOP_K` | `5` | Labels per image (spec: top-5). |
-| `VISION_MIN_CONFIDENCE` | `0.0` | Drop labels below this probability. |
-| `VISION_NUM_THREADS` | min(4, CPUs) | PyTorch intra-op threads per worker. Keep `WEB_CONCURRENCY x VISION_NUM_THREADS <= CPU cores`. |
-| `VISION_MAX_CONCURRENCY` | `2` | Concurrent inferences per worker (thread pool + semaphore). |
-| `VISION_WARMUP` | `true` | Run one dummy inference after loading. |
-| `VISION_TIMEOUT_SECONDS` | `30` | Per-image inference timeout. |
-| `TORCH_HOME` | `~/.cache/torch` | Where weights are cached (`/opt/torch` in Docker, pre-downloaded). |
+| `VISION_BACKEND` | `ollama` | `ollama`: an online vision model describes each image (sentence + keywords). `disabled`: users type keywords and nothing is sent to the vision model. |
+| `VISION_MODEL` | `gemma4:31b` | Vision-capable model (`ollama` backend). On Ollama Cloud's free plan this is the vision model that works today; others return HTTP 402 "not in the Free plan". |
+| `VISION_ENDPOINT` | `OLLAMA_ENDPOINT` | Chat endpoint for the vision model: Ollama (`/api/chat`) or any OpenAI-compatible `/chat/completions` that accepts `image_url` parts. |
+| `VISION_API_KEY` | `OLLAMA_API_KEY` | Bearer key for `VISION_ENDPOINT`. |
+| `VISION_TOP_K` | `5` | Keywords/labels per image. |
+| `VISION_MAX_CONCURRENCY` | `2` | Concurrent vision requests per worker (semaphore). |
+| `VISION_TIMEOUT_SECONDS` | `30` | Total time budget per image, retries included. |
+
+The ResNet-50 settings (`VISION_WEIGHTS`, `VISION_MIN_CONFIDENCE`,
+`VISION_NUM_THREADS`, `VISION_WARMUP`, `TORCH_HOME`) no longer exist and are
+ignored; `VISION_BACKEND=resnet50` is rejected at start-up.
 
 ## Ollama Cloud
 
@@ -131,7 +133,7 @@ process.
 
 | Variable | Default | Description |
 |---|---|---|
-| `WEB_CONCURRENCY` | `2` | Worker processes (each loads ResNet-50, ~300-400 MB RSS). |
+| `WEB_CONCURRENCY` | `2` | Worker processes (~50 MB RSS each). |
 | `BIND` | `0.0.0.0:$PORT` | Listen address. |
 | `GUNICORN_TIMEOUT` | `120` | Worker timeout. |
 | `GUNICORN_GRACEFUL_TIMEOUT` | `30` | Graceful shutdown. |

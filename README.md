@@ -2,8 +2,8 @@
 
 Turn photos into ready-to-post social content in three steps:
 
-1. **Upload** one or more images - a **ResNet-50** model running on the server
-   detects the top-5 visual concepts in each.
+1. **Upload** one or more images - an online vision model (free `gemma4:31b` on
+   **Ollama Cloud**) describes each one and suggests keywords.
 2. **Generate** a punchy caption and 5-8 hashtags with **Ollama Cloud**, then
    edit them freely (changes autosave).
 3. **Schedule** the post with its image on one or more **Buffer** profiles -
@@ -55,9 +55,8 @@ open http://localhost:8000
 ```bash
 cd Social-Booster
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt                 # CPU-only PyTorch
+pip install -r requirements-dev.txt
 cp .env.example .env                                # add your keys
-python scripts/download_model.py                    # optional: pre-fetch ResNet-50
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -76,12 +75,12 @@ The full flow - including the OAuth consent screen - works offline.
 sequenceDiagram
     participant U as Browser (HTMX)
     participant A as FastAPI
-    participant V as ResNet-50
+    participant V as Vision model (Ollama Cloud)
     participant O as Ollama Cloud
     participant B as Buffer
     U->>A: POST /upload (images)
-    A->>V: classify (thread pool)
-    A-->>U: cards with detected concepts
+    A->>V: describe <=512 px preview
+    A-->>U: cards with description + keywords
     U->>A: POST /generate (keywords, tone)
     A->>O: chat completion (JSON copy)
     A-->>U: card with caption + hashtags
@@ -106,7 +105,7 @@ essentials:
 | `PUBLIC_BASE_URL` | public origin; Buffer downloads images from it |
 | `OLLAMA_API_KEY`, `OLLAMA_ENDPOINT`, `OLLAMA_MODEL` | AI copywriting |
 | `BUFFER_CLIENT_ID`, `BUFFER_CLIENT_SECRET`, `BUFFER_REDIRECT_URI` | Buffer OAuth app |
-| `VISION_BACKEND` | `resnet50` or `disabled` |
+| `VISION_BACKEND`, `VISION_MODEL` | `ollama` (online vision model, default `gemma4:31b`) or `disabled` |
 
 Full reference: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 

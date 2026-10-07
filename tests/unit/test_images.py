@@ -182,7 +182,9 @@ class TestDownscaling:
         result = shrinking.process(buffer.getvalue(), declared_content_type="image/png")
         with Image.open(io.BytesIO(result.data)) as reopened:
             assert (reopened.mode, reopened.size) == ("RGBA", (100, 50))
-            assert reopened.getpixel((0, 0))[3] == 0
+            pixel = reopened.getpixel((0, 0))
+            assert isinstance(pixel, tuple)
+            assert pixel[3] == 0
 
     def test_opaque_palette_becomes_rgb(self, shrinking: ImageProcessor) -> None:
         buffer = io.BytesIO()

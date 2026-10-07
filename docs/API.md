@@ -70,7 +70,7 @@ Write a caption and hashtags with Ollama Cloud.
 | Field | Type | Notes |
 |---|---|---|
 | `draft_id` | 32 hex chars | required |
-| `keywords` | string | comma-separated visual concepts (pre-filled from ResNet-50 labels, editable) |
+| `keywords` | string | comma-separated visual concepts (pre-filled from the vision model, editable); the stored image description is added to the prompt as background |
 | `tone` | `friendly` \| `professional` \| `playful` \| `inspirational` \| `luxury` \| `bold` | default `friendly` |
 
 | Status | Meaning |

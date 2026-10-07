@@ -474,11 +474,6 @@ main {
     color: var(--mab-brand-active);
 }
 
-.label-score {
-    font-size: 0.7rem;
-    opacity: 0.7;
-}
-
 /* Busy state for action buttons. */
 .btn-spinner,
 .btn-label-busy {

@@ -303,15 +303,14 @@ class TestProfiles:
     ) -> None:
         api = FakeBufferAPI()
         limited = {"message": "slow down", "extensions": {"code": "RATE_LIMIT_EXCEEDED"}}
-        route = router.post(BUFFER_API_URL).mock(
-            side_effect=[
-                httpx.Response(502),
-                httpx.ConnectTimeout("slow"),
-                httpx.Response(200, json={"errors": [limited]}),
-                api,  # organizations
-                api,  # channels
-            ]
-        )
+        responses: list[Any] = [
+            httpx.Response(502),
+            httpx.ConnectTimeout("slow"),
+            httpx.Response(200, json={"errors": [limited]}),
+            api,  # organizations
+            api,  # channels
+        ]
+        route = router.post(BUFFER_API_URL).mock(side_effect=responses)
         client = make_client(http, retry=RetryPolicy(max_attempts=4, jitter=0))
         assert len(await client.list_profiles(TOKEN)) == 2
         assert route.call_count == 5
@@ -477,7 +476,8 @@ class TestPublish:
         self, router: respx.MockRouter, http: httpx.AsyncClient
     ) -> None:
         api = FakeBufferAPI()
-        route = router.post(BUFFER_API_URL).mock(side_effect=[httpx.ConnectError("refused"), api])
+        responses: list[Any] = [httpx.ConnectError("refused"), api]
+        route = router.post(BUFFER_API_URL).mock(side_effect=responses)
         result = await make_client(http).publish(TOKEN, schedule_post(profile_ids=("p1",)))
         assert result.update_ids == ("post-1",)
         assert route.call_count == 2

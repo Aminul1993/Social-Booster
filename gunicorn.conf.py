@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 bind = os.getenv("BIND", f"0.0.0.0:{os.getenv('PORT', '8000')}")
-# Each worker loads its own ResNet-50 (~300 MB RSS with PyTorch); size accordingly.
+# ~50 MB RSS per worker (image description runs at the vision provider).
 workers = int(os.getenv("WEB_CONCURRENCY", "2"))
 worker_class = "uvicorn_worker.UvicornWorker"
-# Vision inference + AI calls can take a while on small CPUs.
+# Vision + copywriting calls to the AI provider can take a while.
 timeout = int(os.getenv("GUNICORN_TIMEOUT", "120"))
 graceful_timeout = int(os.getenv("GUNICORN_GRACEFUL_TIMEOUT", "30"))
 keepalive = int(os.getenv("GUNICORN_KEEPALIVE", "5"))
@@ -24,7 +24,7 @@ max_requests = int(os.getenv("GUNICORN_MAX_REQUESTS", "0"))
 max_requests_jitter = int(os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "0"))
 # Trust X-Forwarded-* only from the reverse proxy.
 forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
-# Fork *before* loading PyTorch: each worker initialises its own model safely.
+# Each worker builds its own app (event loop, HTTP pool, SQLite connection).
 preload_app = False
 # The app writes its own structured access log.
 accesslog = None

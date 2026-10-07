@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "marketing-ai-builder"
 version = "1.0.0"
-description = "AI-powered social-media post builder: image tagging (ResNet-50), copy generation (Ollama Cloud) and scheduling (Buffer)."
+description = "AI-powered social-media post builder: image description and copy generation (Ollama Cloud) and scheduling (Buffer)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -16,8 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
-# Runtime dependencies (exact pins live in requirements.txt, which also points pip
-# at the CPU-only PyTorch index).
+# Runtime dependencies (exact pins live in requirements.txt).
 dependencies = [
     "fastapi>=0.142,<0.143",
     "uvicorn[standard]>=0.54",
@@ -34,8 +33,6 @@ dependencies = [
     "prometheus-client>=0.26",
     "tzdata>=2026.5",
     "pillow>=12.3",
-    "torch>=2.14",
-    "torchvision>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -110,7 +107,7 @@ plugins = ["pydantic.mypy"]
 exclude = ["^\\.venv/", "^uploads/", "^data/", "^build/"]
 
 [[tool.mypy.overrides]]
-module = ["torchvision.*", "respx.*"]
+module = ["respx.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -141,7 +138,6 @@ addopts = [
 ]
 markers = [
     "integration: end-to-end workflow tests through the ASGI app",
-    "torch: tests that execute the real torchvision ResNet-50 graph",
 ]
 filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",

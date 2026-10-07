@@ -32,10 +32,10 @@ from app.middleware import (
 )
 from app.routes import buffer, drafts, ops, pages
 from app.templating import STATIC_DIR
-from services.vision import ClassifierFactory
+from services.vision import ImageDescriber
 
 DESCRIPTION = """
-Upload photos, let a ResNet-50 vision model detect what is in them, have
+Upload photos, let a vision model describe them and suggest keywords, have
 Ollama Cloud write a caption and hashtags, edit the copy and schedule the post
 on Buffer.
 
@@ -47,14 +47,16 @@ request requires the `X-CSRF-Token` header (rendered into the page).
 def create_app(
     settings: Settings | None = None,
     *,
-    classifier_factory: ClassifierFactory | None = None,
+    describer: ImageDescriber | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     """Application factory."""
     settings = settings or get_settings()
     configure_logging(settings.log_level, settings.log_format)
     container = build_container(
-        settings, classifier_factory=classifier_factory, http_transport=http_transport
+        settings,
+        describer=describer,
+        http_transport=http_transport,
     )
 
     @asynccontextmanager

@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # AI Marketing Post Builder - production image
 #   * multi-stage: build tools never reach the runtime image
-#   * CPU-only PyTorch, ResNet-50 weights baked in (no download at start-up)
+#   * small: images are described by an online vision model, no ML runtime
 #   * non-root user, read-only friendly, health-checked
 # -----------------------------------------------------------------------------
 ARG PYTHON_VERSION=3.12
@@ -13,8 +13,7 @@ FROM python:${PYTHON_VERSION}-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/opt/venv/bin:$PATH" \
-    TORCH_HOME=/opt/torch
+    PATH="/opt/venv/bin:$PATH"
 
 RUN python -m venv /opt/venv
 
@@ -23,15 +22,11 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt
 
-COPY scripts/download_model.py scripts/download_model.py
-ARG VISION_WEIGHTS=IMAGENET1K_V2
-RUN python scripts/download_model.py --weights "${VISION_WEIGHTS}"
-
 # ---------------------------------------------------------------- runtime ----
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
 LABEL org.opencontainers.image.title="marketing-ai-builder" \
-      org.opencontainers.image.description="AI-powered social post builder (FastAPI, HTMX, ResNet-50, Ollama Cloud, Buffer)" \
+      org.opencontainers.image.description="AI-powered social post builder (FastAPI, HTMX, Ollama Cloud, Buffer)" \
       org.opencontainers.image.version="1.0.0" \
       org.opencontainers.image.licenses="MIT"
 
@@ -41,7 +36,6 @@ LABEL org.opencontainers.image.title="marketing-ai-builder" \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    TORCH_HOME=/opt/torch \
     ENVIRONMENT=production \
     LOG_FORMAT=json \
     HOST=0.0.0.0 \
@@ -55,7 +49,6 @@ RUN groupadd --system --gid 10001 app \
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/torch /opt/torch
 COPY --chown=app:app app ./app
 COPY --chown=app:app services ./services
 COPY --chown=app:app templates ./templates

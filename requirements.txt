@@ -1,8 +1,6 @@
 # Runtime dependencies (exact pins). Install with:  pip install -r requirements.txt
 #
-# The extra index serves CPU-only PyTorch wheels (~200 MB instead of multi-GB CUDA
-# builds on Linux). On Windows/macOS the CPU build is chosen as well.
---extra-index-url https://download.pytorch.org/whl/cpu
+# Images are described by an online vision model, so there is no ML runtime.
 
 # --- web framework ------------------------------------------------------------
 fastapi==0.142.2
@@ -32,7 +30,5 @@ tzdata==2026.5
 # --- observability ---------------------------------------------------------------
 prometheus-client==0.26.0
 
-# --- vision (ResNet-50) -----------------------------------------------------------
+# --- images -----------------------------------------------------------------------
 pillow==12.3.0
-torch==2.14.1
-torchvision==0.29.1

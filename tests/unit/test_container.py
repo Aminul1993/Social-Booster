@@ -12,13 +12,13 @@ from app.container import build_container
 from app.models import Draft
 from services.publishing import OAuthToken
 from tests.conftest import SettingsFactory
-from tests.helpers import FakeClassifier, make_image
+from tests.helpers import FakeDescriber, make_image
 
 
 async def test_run_maintenance_purges_expired_data(settings_factory: SettingsFactory) -> None:
     container = build_container(
         settings_factory(draft_retention_hours=1, session_max_age_seconds=3600),
-        classifier_factory=FakeClassifier,
+        describer=FakeDescriber(),
     )
     await container.database.connect()
     try:
@@ -57,7 +57,7 @@ async def test_lifecycle_starts_and_stops_background_tasks(
     settings_factory: SettingsFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     container = build_container(
-        settings_factory(draft_retention_hours=24), classifier_factory=FakeClassifier
+        settings_factory(draft_retention_hours=24), describer=FakeDescriber()
     )
     maintenance = AsyncMock(side_effect=[RuntimeError("disk on fire"), None])
     monkeypatch.setattr(container, "run_maintenance", maintenance)
@@ -81,6 +81,7 @@ async def test_no_maintenance_task_when_retention_disabled(
     container = build_container(settings_factory(draft_retention_hours=0))
     await container.start()
     try:
-        assert [task.get_name() for task in container._tasks] == ["vision-load"]
+        assert container._tasks == []  # nothing to load: the vision model is remote
+        assert container.vision.ready  # OLLAMA_API_KEY is shared with the vision model
     finally:
         await container.aclose()

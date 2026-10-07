@@ -2,7 +2,7 @@
 
 Buffer API clients need a Buffer account and Ollama Cloud needs a paid key, so
 this tiny server mimics Buffer's OAuth (with PKCE) and GraphQL endpoints and
-the chat completions endpoint the app uses. Nothing is posted anywhere.
+the chat completions endpoint the app uses (image descriptions and copy). Nothing is posted anywhere.
 
     python scripts/mock_upstreams.py --port 8020
 
@@ -50,14 +50,22 @@ CHANNELS = [
 async def chat(request: Request) -> JSONResponse:
     body = await request.json()
     prompt = body["messages"][-1]["content"]
-    match = re.search(r"(\[.*?\])", prompt)
-    keywords: list[str] = json.loads(match.group(1)) if match else ["photo"]
-    subject = keywords[0] if keywords else "this moment"
-    tags = [f"#{re.sub(r'[^0-9A-Za-z]', '', k).lower()}" for k in keywords][:4]
-    tags += ["#instagood", "#photooftheday", "#weekendvibes"]
-    content = json.dumps(
-        {"caption": f"Say hello to {subject} - pure good vibes, zero filter.", "hashtags": tags}
-    )
+    if isinstance(prompt, list):  # an image to describe (OpenAI content parts)
+        content = json.dumps(
+            {
+                "description": "A cheerful product photo in soft natural light.",
+                "keywords": ["product", "lifestyle", "natural light", "minimal"],
+            }
+        )
+    else:
+        match = re.search(r"(\[.*?\])", prompt)
+        keywords: list[str] = json.loads(match.group(1)) if match else ["photo"]
+        subject = keywords[0] if keywords else "this moment"
+        tags = [f"#{re.sub(r'[^0-9A-Za-z]', '', k).lower()}" for k in keywords][:4]
+        tags += ["#instagood", "#photooftheday", "#weekendvibes"]
+        content = json.dumps(
+            {"caption": f"Say hello to {subject} - pure good vibes, zero filter.", "hashtags": tags}
+        )
     return JSONResponse(
         {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",

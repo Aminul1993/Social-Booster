@@ -15,7 +15,7 @@ from services.ollama import (
     finalize_copy,
     parse_copy,
 )
-from services.prompts import CopyRequest, Tone
+from services.prompts import ChatMessage, CopyRequest, Tone
 from services.retry import RetryPolicy
 from tests.helpers import GOOD_COPY, OLLAMA_URL, ollama_reply
 
@@ -235,6 +235,43 @@ class TestClient:
         router.post(OLLAMA_URL).respond(404)
         with pytest.raises(OllamaError, match="test-model"):
             await make_client(http, sleeps).generate_copy(REQUEST)
+
+    async def test_model_not_in_plan_is_not_retried(
+        self, router: respx.MockRouter, http: httpx.AsyncClient, sleeps: Sleeps
+    ) -> None:
+        route = router.post(OLLAMA_URL).respond(402, json={"error": {"message": "upgrade"}})
+        with pytest.raises(OllamaError, match="'test-model' is not included in your plan"):
+            await make_client(http, sleeps).generate_copy(REQUEST)
+        assert route.call_count == 1
+
+    async def test_images_become_openai_content_parts(
+        self, router: respx.MockRouter, http: httpx.AsyncClient, sleeps: Sleeps
+    ) -> None:
+        route = router.post(OLLAMA_URL).respond(json=ollama_reply("{}"))
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "describe", "images": ["QUJD"]},
+        ]
+        await make_client(http, sleeps).chat(messages)
+        system, user = json.loads(route.calls.last.request.content)["messages"]
+        assert system == {"role": "system", "content": "be brief"}
+        assert user == {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+            ],
+        }
+
+    async def test_images_stay_native_for_ollama_api(
+        self, router: respx.MockRouter, http: httpx.AsyncClient, sleeps: Sleeps
+    ) -> None:
+        url = "http://localhost:11434/api/chat"
+        route = router.post(url).respond(json={"message": {"content": "{}"}, "done": True})
+        client = make_client(http, sleeps, endpoint=url, api_key=None)
+        await client.chat([{"role": "user", "content": "describe", "images": ["QUJD"]}])
+        (user,) = json.loads(route.calls.last.request.content)["messages"]
+        assert user == {"role": "user", "content": "describe", "images": ["QUJD"]}
 
     async def test_other_client_error(
         self, router: respx.MockRouter, http: httpx.AsyncClient, sleeps: Sleeps

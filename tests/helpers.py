@@ -16,7 +16,7 @@ from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from PIL import Image
 
-from services.vision import VisionLabel
+from services.vision import ImageAnalysis
 
 OLLAMA_URL = "https://ollama.test/v1/chat/completions"
 BUFFER_OAUTH_URL = "https://auth.buffer.test/auth"
@@ -50,7 +50,7 @@ class FakeBufferAPI:
 
     def __init__(
         self,
-        channels: list[dict[str, Any]] | None = None,
+        channels: list[Any] | None = None,  # Any: tests also feed malformed entries
         organizations: tuple[str, ...] = ("org-1",),
     ) -> None:
         self.channels = CHANNELS_PAYLOAD if channels is None else channels
@@ -86,26 +86,27 @@ class FakeBufferAPI:
 _CSRF_RE = re.compile(r'"X-CSRF-Token": "([^"]+)"')
 
 
-class FakeClassifier:
-    """Deterministic stand-in for ResNet-50."""
+class FakeDescriber:
+    """Deterministic stand-in for the online vision model."""
 
-    labels: tuple[VisionLabel, ...] = (
-        VisionLabel("golden_retriever", 0.8213),
-        VisionLabel("tennis ball", 0.0912),
-        VisionLabel("Labrador retriever", 0.0411),
-    )
+    configured = True
+    model = "fake-vision"
 
-    def __init__(self) -> None:
-        self.calls = 0
+    def __init__(self, analysis: ImageAnalysis | None = None) -> None:
+        self.analysis = analysis or ImageAnalysis(
+            keywords=["golden retriever", "tennis ball", "Labrador retriever"],
+            description="A golden retriever chases a tennis ball across a sunny lawn.",
+        )
+        self.calls: list[tuple[tuple[int, int], int]] = []
 
-    def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
-        self.calls += 1
-        return list(self.labels[:top_k])
+    async def describe(self, image: Image.Image, max_keywords: int) -> ImageAnalysis:
+        self.calls.append((image.size, max_keywords))
+        return self.analysis
 
 
-class FailingClassifier:
-    def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
-        raise RuntimeError("inference exploded")
+class FailingDescriber(FakeDescriber):
+    async def describe(self, image: Image.Image, max_keywords: int) -> ImageAnalysis:
+        raise RuntimeError("model exploded")
 
 
 def make_image(

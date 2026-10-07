@@ -62,7 +62,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: Social-Booster/requirements*.txt
-      - name: Install dependencies (CPU-only PyTorch)
+      - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Pytest with coverage gate (>= 90%)
         run: pytest --cov-report=xml --junitxml=junit.xml
@@ -96,6 +96,7 @@ jobs:
           docker run -d --name mab -p 8000:8000 \
             -e SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
             -e COOKIE_SECURE=false \
+            -e OLLAMA_API_KEY=ci-placeholder \
             --read-only --tmpfs /tmp \
             marketing-ai-builder:ci
       - name: Wait for health
@@ -105,7 +106,7 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/health/ready | tee ready.json
-          python -c "import json; d=json.load(open('ready.json')); assert d['checks']['vision']['status'] in ('ok','loading'), d"
+          python -c "import json; d=json.load(open('ready.json')); assert d['checks']['vision']['status'] == 'ok', d"
           curl -fsS http://127.0.0.1:8000/ | grep -q "Upload your images"
       - name: Container logs
         if: always()

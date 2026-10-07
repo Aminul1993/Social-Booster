@@ -13,19 +13,17 @@ flowchart LR
     subgraph host[Application host / container]
         proxy[Reverse proxy<br/>Caddy / NGINX<br/>TLS, body limit]
         app[FastAPI app<br/>Gunicorn + Uvicorn workers]
-        vision[(ResNet-50<br/>PyTorch CPU<br/>in-process)]
         db[(SQLite WAL<br/>drafts + encrypted tokens)]
         files[(Upload storage<br/>/uploads volume)]
     end
-    ollama[Ollama Cloud<br/>chat completions]
-    buffer[Buffer API<br/>OAuth 2 + updates]
+    ollama[Ollama Cloud<br/>chat completions:<br/>vision model + copywriter]
+    buffer[Buffer API<br/>OAuth 2 + GraphQL]
     prom[Prometheus]
 
     user -- HTTPS --> proxy --> app
-    app --> vision
     app --> db
     app --> files
-    app -- HTTPS, Bearer API key --> ollama
+    app -- "HTTPS, Bearer API key (image previews, prompts)" --> ollama
     app -- HTTPS, OAuth token --> buffer
     buffer -- fetches image --> proxy
     prom -- /metrics --> app
@@ -55,7 +53,7 @@ flowchart TB
         container[container.py<br/>composition root]
     end
     subgraph services[services/ - framework-agnostic adapters]
-        vision[vision.py<br/>VisionService + ResNet50Classifier]
+        vision[vision.py<br/>VisionService + OllamaImageDescriber]
         ollama[ollama.py + prompts.py<br/>OllamaClient, parser]
         buffer[buffer.py + publishing.py<br/>BufferClient implements SocialPublisher]
         storage[storage.py<br/>Storage protocol, LocalFileStorage]
@@ -88,7 +86,7 @@ tested without FastAPI.
 | Dependencies | Inject container, session id, CSRF check, rate limits, OAuth token | `app/dependencies.py`, `app/rate_limit.py` |
 | Application services | Orchestrate the workflow, enforce business rules | `DraftService`, `PublisherAccounts` |
 | Repositories | Persistence scoped by session id | `DraftRepository`, `TokenRepository` |
-| Service adapters | Talk to PyTorch, Ollama, Buffer, disk | `VisionService`, `OllamaClient`, `BufferClient`, `LocalFileStorage` |
+| Service adapters | Talk to Ollama (vision + copy), Buffer, disk | `VisionService`, `OllamaClient`, `BufferClient`, `LocalFileStorage` |
 | Composition root | Build everything from `Settings`, own lifecycle | `ServiceContainer`, `create_app()` |
 
 ## 3. Request pipeline
@@ -191,9 +189,9 @@ flowchart TB
     pil -- error --> rej4[reject: corrupted]
     pil --> clean[apply EXIF orientation,<br/>downscale to IMAGE_MAX_DIMENSION,<br/>re-encode, strip EXIF/XMP/GPS]
     clean --> store[Storage.save -> random key<br/>atomic write]
-    store --> tag[VisionService.classify<br/>thread pool + semaphore + timeout]
-    tag -- VisionError --> degrade[draft without labels<br/>user types keywords]
-    tag --> labels[top-k labels + confidence]
+    store --> tag[VisionService.analyze<br/>online vision model,<br/>semaphore + timeout]
+    tag -- VisionError --> degrade[draft without keywords<br/>user types them]
+    tag --> labels[description + top-k keywords]
     labels --> draft[(Draft row)]
     degrade --> draft
 ```
@@ -204,15 +202,22 @@ rest of a batch waits in the multipart spool files on disk. Images whose longer
 side exceeds `IMAGE_MAX_DIMENSION` (default 2048 px) are downscaled before
 storing; JPEGs are decoded straight at 1/2, 1/4 or 1/8 scale by libjpeg
 (`Image.draft`), so a large photo never exists in memory at full size. EXIF
-orientation is applied in place, and ResNet-50 gets a <=512 px preview made
-while the pixels are decoded instead of decoding the stored file again.
+orientation is applied in place, and the vision backend gets a <=512 px
+preview made while the pixels are decoded instead of decoding the stored file
+again.
 
-All CPU-bound work (Pillow, PyTorch) runs off the event loop: Pillow through
-`asyncio.to_thread`, ResNet-50 on a dedicated `ThreadPoolExecutor` sized by
-`VISION_MAX_CONCURRENCY`, with `torch.set_num_threads(VISION_NUM_THREADS)`,
-`inference_mode()` and channels-last tensors. The model loads once per worker
-in the background at start-up (with a warm-up inference); requests that arrive
-earlier simply await the load lock.
+The preview is sent as a base64 JPEG to a vision model (`VISION_MODEL`,
+default `gemma4:31b`, free on Ollama Cloud) through the same `OllamaClient` as
+copywriting, sharing `OLLAMA_ENDPOINT`/`OLLAMA_API_KEY` unless
+`VISION_ENDPOINT`/`VISION_API_KEY` are set. It returns JSON with a one-sentence
+`description` and `keywords`. The description is shown on the card, used as alt
+text and passed to the caption prompt as background. Nothing heavy runs in the
+worker (~50 MB RSS). `VISION_BACKEND=disabled` skips the call and users type
+the keywords.
+
+A semaphore (`VISION_MAX_CONCURRENCY`) bounds analyses per worker and
+`VISION_TIMEOUT_SECONDS` caps each one; failures leave the draft without
+keywords and the user types them. Pillow work runs through `asyncio.to_thread`.
 
 ## 7. AI generation flow
 
@@ -352,7 +357,7 @@ session lifetime.
 
 | Extension | How |
 |---|---|
-| Another vision model (CLIP, Google Vision) | Implement `ImageClassifier.predict()` and pass a factory to `VisionService` |
+| Another vision model or provider | Set `VISION_MODEL` / `VISION_ENDPOINT` / `VISION_API_KEY` (any OpenAI-compatible endpoint that accepts images), or implement the `ImageDescriber` protocol and pass it to `VisionService` |
 | Another LLM provider (OpenAI, Gemini, self-hosted Ollama) | Point `OLLAMA_ENDPOINT` at any OpenAI-compatible endpoint, or Ollama's native `/api/chat` |
 | Another publishing provider | Implement `SocialPublisher` (`services/publishing.py`) and wire it in `app/container.py` |
 | Object storage (S3, GCS) | Implement the `Storage` protocol; return public URLs from `public_path()` |

@@ -15,9 +15,9 @@ Legend: **Done** = implemented and verified by the listed tests;
 |---|---|---|---|---|---|
 | FR-01 | Upload **multiple** images in one request | §4 `/upload`, §8 | `app/routes/drafts.py::upload`, `app/drafts.py::DraftService.upload` | `integration/test_upload_workflow.py::test_multiple_images_become_tagged_cards` | Done |
 | FR-02 | Store files under `uploads/` with server-generated safe names; serve them publicly | §1, §4 | `services/storage.py::LocalFileStorage`, `/uploads` mount | `unit/test_storage.py`, upload workflow (served headers) | Done |
-| FR-03 | Tag every image with a **ResNet-50** (ImageNet), **top-5** concepts | §0, §5 | `services/vision.py::ResNet50Classifier`, `VisionService` (`VISION_TOP_K=5`) | `unit/test_vision.py::TestResNet50` (real graph), Docker smoke test (photo -> "golden retriever") | Done |
-| FR-04 | Inference must not block the event loop | §5 | dedicated `ThreadPoolExecutor` + semaphore + timeout | `test_vision.py::test_concurrency_is_bounded`, `test_timeout` | Done |
-| FR-05 | Card fragment per image showing detected labels | §4, §8 `_card.html` | `templates/_card.html`, `partials/_cards.html` | upload workflow tests (labels + confidence) | Done |
+| FR-03 | Tag every image with a **ResNet-50** (ImageNet), **top-5** concepts | §0, §5 | Replaced by an online vision model that returns a description + top-5 keywords (D-15): `services/vision.py::OllamaImageDescriber` (`VISION_TOP_K=5`) | `unit/test_vision.py`, `integration/test_upload_workflow.py::test_vision_model_over_http` | Changed (D-15) |
+| FR-04 | Inference must not block the event loop | §5 | async HTTP call to the vision model + semaphore + timeout; JPEG encoding via `asyncio.to_thread` | `test_vision.py::test_concurrency_is_bounded`, `test_timeout` | Done |
+| FR-05 | Card fragment per image showing detected labels | §4, §8 `_card.html` | `templates/_card.html`, `partials/_cards.html` | upload workflow tests (description + keywords) | Done |
 | FR-06 | Generate caption + hashtags with **Ollama Cloud** from the visual concepts | §4 `/generate`, §6 | `services/ollama.py::OllamaClient.generate_copy`, `app/routes/drafts.py::generate` | `integration/test_generation_workflow.py`, `unit/test_ollama.py` | Changed (D-07, D-11) |
 | FR-07 | Caption <= 150 chars; 5-8 hashtags prefixed with `#` | §4 prompt | `services/prompts.py`, `services/ollama.py::finalize_copy` (`CAPTION_MAX_CHARS`, `HASHTAGS_MIN/MAX`) | `test_ollama.py::TestFinalize` | Done |
 | FR-08 | OpenAI-compatible chat payload, `temperature 0.7`, bounded `max_tokens` | §6, §11 | `OllamaClient._payload` (+ native `/api/chat`) | `test_ollama.py::test_generate_copy_openai_payload`, `test_native_api_payload_and_response` | Done |
@@ -120,22 +120,23 @@ Legend: **Done** = implemented and verified by the listed tests;
 | D-03 | Buffer URLs on `buffer.com` / `api.buffer.com`; profiles URL hard-coded | `auth.buffer.com` (OAuth + PKCE) and `api.buffer.com` (GraphQL) defaults via `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_API_URL` | Buffer's current API; the v1 `bufferapp.com` endpoints reject clients from Settings -> API (`invalid_client`). Every URL is overridable. |
 | D-04 | Token exchange and update creation sent as JSON; `media.picture` | form-encoded token requests; GraphQL `createPost` per channel with `assets.image.url` | OAuth token endpoints take form bodies; Buffer's GraphQL API posts to one channel per mutation. |
 | D-05 | Access token stored in a signed cookie | Fernet-encrypted server-side storage keyed by an opaque session id | A signed cookie is readable by the browser; the stated goal ("the token never hits the browser") required server-side storage. |
-| D-06 | `torch.hub.load(..., pretrained=True)` + downloaded `imagenet_classes.txt` | `torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)`; class names from weight metadata | `pretrained=` is removed in current torchvision; metadata removes the extra download. Weights are baked into the Docker image. |
+| D-06 | `torch.hub.load(..., pretrained=True)` + downloaded `imagenet_classes.txt` | no local model at all (see D-15) | Superseded: image description moved to an online vision model. |
 | D-07 | Prompt asks for two lines `CAPTION:` / `HASHTAGS:` | prompt asks for JSON; parser accepts JSON, the original line format and free text, plus one repair turn | Structured parsing and error recovery requirements. |
 | D-08 | HTMX 1.9.12 and Bootstrap 5.3.3 from CDNs | HTMX 2.0.11 and Bootstrap 5.3.8 vendored in `static/vendor/` | Strict CSP without third-party script origins; current maintained versions; works offline. |
-| D-09 | Old dependency pins (FastAPI 0.111, torch 2.3...) | current pins (FastAPI 0.142, torch 2.14 CPU...) | Python 3.12+ target and security fixes. |
+| D-09 | Old dependency pins (FastAPI 0.111, torch 2.3...) | current pins (FastAPI 0.142, Pillow 12.3...), no PyTorch | Python 3.12+ target and security fixes. |
 | D-10 | One schedule form at the bottom that uses the *first* card | scheduling per card, multiple profiles, three modes | Each image is its own post; spec §12 lists profile selection as the next step. |
 | D-11 | `/generate` receives `image_url` + `labels` from the client | receives `draft_id` + editable `keywords` | Prevents arbitrary media-URL injection; drafts are server-side so they survive the OAuth redirect. |
 | D-12 | `datetime-local` labelled "UTC" | interpreted in the browser's IANA timezone and converted to UTC | `datetime-local` has no timezone; using the user's zone avoids off-by-hours schedules. |
 | D-13 | Upload limit "10 MB" mentioned only | enforced while streaming + pixel budget + request body cap | Security checklist made concrete. |
 | D-14 | Concurrency suggestion `asyncio.Semaphore(2)` | `VISION_MAX_CONCURRENCY` (default 2) semaphore + bounded executor | Same intent, configurable. |
+| D-15 | In-process ResNet-50 (PyTorch) tags images | default `VISION_BACKEND=ollama`: a free online vision model (`gemma4:31b` on Ollama Cloud) returns a description + keywords; ResNet-50 and PyTorch were removed | PyTorch made each worker ~400 MB and the image ~1.8 GB, too much for small hosts (e.g. 512 MB plans); the online model also describes the scene, which improves captions. |
 
 ### Items from `steps.md` intentionally not implemented
 
 | Item | Reason / alternative |
 |---|---|
 | §13 single-file `demo_app.py` | Superseded by the full project; `scripts/mock_upstreams.py` + `VISION_BACKEND` give an even quicker local demo. |
-| §12 swap to CLIP / Google Vision | Not required; `ImageClassifier` protocol makes it a drop-in. |
+| §12 swap to CLIP / Google Vision | Done differently: any vision-capable chat model via `VISION_MODEL` / `VISION_ENDPOINT`, or a custom `ImageDescriber`. |
 | §12 OpenAI / Gemini instead of Ollama | Any OpenAI-compatible endpoint works via `OLLAMA_ENDPOINT`. |
 | §12 server-side APScheduler auto-posting | Buffer performs the scheduling (core requirement); not duplicated. |
 | §12 user accounts (FastAPI-Users) | Out of scope; sessions + server-side token store are the extension point (see SECURITY.md "Known limitations"). |
@@ -171,9 +172,9 @@ Validation run on Windows 11 / Python 3.12.0 and in the Linux container
 | Black | 68 files unchanged |
 | Mypy `--strict` (app, services, tests, scripts, gunicorn.conf.py) | 0 errors in 68 files |
 | Pre-commit (11 hooks) | all passed |
-| Docker image build | success (1.8 GB, weights baked in) |
-| Container smoke test (read-only rootfs, production mode) | `/health` 200, `/health/ready` ok, vision model ready in ~2.8 s |
-| Real ResNet-50 inference in the container | golden-retriever photo -> top-1 "golden retriever", 145 ms request |
+| Docker image build | success (318 MB, no ML runtime) |
+| Container smoke test (read-only rootfs, production mode) | `/health` 200, `/health/ready` ok (vision: ok, no model to load) |
+| Online image description from the container | golden-retriever photo -> "A golden retriever dog with a black collar lies in a field of dry grass during golden hour." + 5 keywords; 3 photos (incl. 40 MP) in 5.0 s; container peak 207 MiB |
 | Browser E2E (Chromium, container + mock Ollama/Buffer) | 24/24 checks pass (the only console message is Chrome logging the intentional 422 validation response): upload, labels, generate, autofocus, autosave, counters, OAuth round trip with drafts preserved, 422 inline errors, mode switch, scheduling to 2 profiles with image URL and UTC time, modal, dark mode, 390 px mobile layout, delete, **no CSP violations** |
 
 Per-module coverage (lowest first): `services/images.py` 94 %,

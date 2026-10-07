@@ -12,8 +12,6 @@ services:
   app:
     build:
       context: .
-      args:
-        VISION_WEIGHTS: ${VISION_WEIGHTS:-IMAGENET1K_V2}
     image: marketing-ai-builder:1.0.0
     env_file:
       - .env

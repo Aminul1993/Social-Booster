@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
@@ -15,7 +14,14 @@ import app.main as main_module
 from app.errors import RateLimitExceededError
 from services.errors import StorageError
 from tests.conftest import AppFactory
-from tests.helpers import AppClient, make_client, make_image, make_raw_client, toast
+from tests.helpers import (
+    AppClient,
+    FakeDescriber,
+    make_client,
+    make_image,
+    make_raw_client,
+    toast,
+)
 
 pytestmark = pytest.mark.usefixtures("mock_http")
 
@@ -67,17 +73,15 @@ class TestIndex:
         async with make_client(app) as client:
             html = (await client.get("/")).text
         assert "AI copywriting is not configured" in html
-        assert "Automatic image tagging is turned off" in html
+        assert "Automatic image description is turned off" in html
         assert "Buffer not configured" in html
 
     async def test_vision_error_banner(self, app_factory: AppFactory) -> None:
-        def broken() -> Any:
-            raise OSError("no weights")
-
-        async with make_client(app_factory(classifier=broken)) as client:
-            await asyncio.sleep(0.05)
+        unconfigured = FakeDescriber()
+        unconfigured.configured = False
+        async with make_client(app_factory(describer=unconfigured)) as client:
             html = (await client.get("/")).text
-        assert "Image tagging is unavailable" in html
+        assert "Automatic image description is unavailable" in html
 
     async def test_request_id_propagation(self, client: AppClient) -> None:
         good = await client.get("/health", headers={"X-Request-ID": "trace-abc-12345"})
@@ -225,7 +229,6 @@ class TestOps:
         assert body["environment"] == "test"
 
     async def test_ready_ok(self, client: AppClient) -> None:
-        await asyncio.sleep(0.05)
         response = await client.get("/health/ready")
         assert response.status_code == 200
         checks = response.json()["checks"]
@@ -251,15 +254,13 @@ class TestOps:
         assert body["checks"]["storage"]["detail"] == "Upload directory is not writable"
         assert body["checks"]["database"]["detail"] == "OSError"
 
-    async def test_ready_degraded_when_vision_failed(self, app_factory: AppFactory) -> None:
-        def broken() -> Any:
-            raise OSError("no weights")
-
-        async with make_client(app_factory(classifier=broken)) as client:
-            await asyncio.sleep(0.05)
+    async def test_ready_degraded_when_vision_not_configured(self, app_factory: AppFactory) -> None:
+        unconfigured = FakeDescriber()
+        unconfigured.configured = False
+        async with make_client(app_factory(describer=unconfigured)) as client:
             body = (await client.get("/health/ready")).json()
         assert body["status"] == "degraded"
-        assert body["checks"]["vision"]["detail"] == "OSError: no weights"
+        assert body["checks"]["vision"]["detail"] == "Image description is not configured."
 
     async def test_metrics_open(self, client: AppClient) -> None:
         await client.get("/health")

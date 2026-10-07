@@ -44,12 +44,12 @@
 {% if vision.status == "error" %}
 <div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
     {{ icon("alert", "icon flex-shrink-0 mt-1") }}
-    <div><strong>Image tagging is unavailable.</strong> You can still type keywords for each image yourself.</div>
+    <div><strong>Automatic image description is unavailable.</strong> You can still type keywords for each image yourself.</div>
 </div>
 {% elif vision.status == "disabled" %}
 <div class="alert alert-info d-flex gap-2 align-items-start" role="note">
     {{ icon("alert", "icon flex-shrink-0 mt-1") }}
-    <div>Automatic image tagging is turned off. Type a few keywords for each image before generating copy.</div>
+    <div>Automatic image description is turned off. Type a few keywords for each image before generating copy.</div>
 </div>
 {% endif %}
 

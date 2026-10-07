@@ -15,7 +15,7 @@
                 aria-label="Enlarge {{ d.original_filename }}">
             <img src="{{ card.image_url }}" class="draft-image" width="{{ d.width }}" height="{{ d.height }}"
                  loading="lazy" decoding="async"
-                 alt="{{ d.original_filename }}{% if d.labels %}: {{ d.labels | map(attribute='name') | join(', ') }}{% endif %}">
+                 alt="{% if d.description %}{{ d.description }}{% else %}{{ d.original_filename }}{% if d.labels %}: {{ d.labels | map(attribute='name') | join(', ') }}{% endif %}{% endif %}">
             <span class="draft-image-zoom" aria-hidden="true">{{ icon("maximize") }}</span>
         </button>
         <span class="badge draft-status text-bg-{{ d.status.badge }}">{{ d.status.label }}</span>
@@ -35,14 +35,17 @@
             </button>
         </div>
 
-        {% if d.labels %}
+        {% if d.labels or d.description %}
         <div>
             <p class="small fw-semibold mb-1">Detected in the image</p>
+            {% if d.description %}<p class="small text-body-secondary mb-2 draft-description">{{ d.description }}</p>{% endif %}
+            {% if d.labels %}
             <ul class="label-list list-unstyled d-flex flex-wrap gap-1 mb-0">
                 {% for label in d.labels %}
-                <li class="label-badge" title="{{ label.percent }}% confidence">{{ label.name }} <span class="label-score">{{ label.percent }}%</span></li>
+                <li class="label-badge">{{ label.name }}</li>
                 {% endfor %}
             </ul>
+            {% endif %}
         </div>
         {% elif d.vision_error %}
         <p class="small text-warning-emphasis d-flex gap-2 mb-0">{{ icon("alert", "icon flex-shrink-0 mt-1") }}<span>This image couldn't be analysed automatically. Type a few keywords below.</span></p>

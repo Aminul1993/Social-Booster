@@ -1,269 +1,200 @@
-"""Image tagging with a torchvision ResNet-50 (ImageNet) on the CPU.
+"""Image description with an online vision-language model.
 
-Design
-------
-* The model is created once per process (lazy, guarded by a lock) and shared.
-* Inference is synchronous PyTorch code; it runs on a dedicated
-  :class:`~concurrent.futures.ThreadPoolExecutor` so the event loop never
-  blocks. An :class:`asyncio.Semaphore` bounds concurrent inferences, which
-  together with ``torch.set_num_threads`` prevents CPU oversubscription when
-  several uploads arrive at once.
-* Class names come from the weights' metadata, so no ``imagenet_classes.txt``
-  download is needed.
-* ``torch`` is imported lazily: the module imports fine without it, and the
-  ``disabled`` backend lets the app run (with manual keywords) on hosts that
-  cannot afford the ~1 GB PyTorch footprint.
+Each upload's small preview is sent to a vision model (Ollama Cloud's free
+``gemma4:31b`` by default) that answers with a one-sentence description and a
+few keywords. Nothing heavy runs in this process, so a worker stays small.
+``VISION_BACKEND=disabled`` skips the call; users then type keywords.
+
+An :class:`asyncio.Semaphore` bounds concurrent requests per worker (provider
+rate limits) and ``timeout_seconds`` caps the time spent on one image.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
+import json
 import logging
-import time
-from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 from PIL import Image
 
-from services.errors import VisionError
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Awaitable
+from services.content import normalize_keywords
+from services.errors import OllamaError, VisionError
+from services.ollama import OllamaClient, clean_model_text
+from services.prompts import DESCRIPTION_MAX_CHARS, build_describe_messages
 
 logger = logging.getLogger(__name__)
 
-VisionBackend = Literal["resnet50", "disabled"]
+VisionBackend = Literal["ollama", "disabled"]
+
+#: Vision-capable model on Ollama Cloud's free plan (others need a paid plan: HTTP 402).
+DEFAULT_VISION_MODEL = "gemma4:31b"
 
 
 @dataclass(frozen=True, slots=True)
-class VisionLabel:
-    """A visual concept detected in an image with the model's confidence."""
+class ImageAnalysis:
+    """What the vision model saw in one image."""
 
-    name: str
-    score: float
+    keywords: list[str] = field(default_factory=list)
+    description: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class VisionConfig:
     """Runtime configuration for :class:`VisionService`."""
 
-    backend: VisionBackend = "resnet50"
-    weights: str | None = "IMAGENET1K_V2"
+    backend: VisionBackend = "ollama"
     top_k: int = 5
-    min_confidence: float = 0.0
-    num_threads: int = 2
     max_concurrency: int = 2
-    warmup: bool = True
     timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= 50:
             raise ValueError("top_k must be between 1 and 50")
-        if not 0.0 <= self.min_confidence <= 1.0:
-            raise ValueError("min_confidence must be between 0 and 1")
-        if self.num_threads < 1 or self.max_concurrency < 1:
-            raise ValueError("num_threads and max_concurrency must be >= 1")
+        if self.max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
 
 
-class ImageClassifier(Protocol):
-    """Anything that can turn a PIL image into ranked labels."""
+class ImageDescriber(Protocol):
+    """A (remote) model that describes a PIL image."""
 
-    def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
-        """Return the ``top_k`` most likely labels, best first."""
+    @property
+    def configured(self) -> bool:
+        """Whether the credentials it needs are present."""
+        ...
+
+    @property
+    def model(self) -> str:
+        """Model name, for logs and the readiness endpoint."""
+        ...
+
+    async def describe(self, image: Image.Image, max_keywords: int) -> ImageAnalysis:
+        """Describe ``image`` with a sentence and up to ``max_keywords`` keywords."""
         ...
 
 
-class ResNet50Classifier:
-    """torchvision ResNet-50 classifier tuned for CPU inference.
+def encode_jpeg_base64(image: Image.Image, *, quality: int = 85) -> str:
+    """Base64 JPEG of ``image`` (send the small preview, not the original)."""
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=quality)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
-    Args:
-        weights: Name of a ``ResNet50_Weights`` member (``IMAGENET1K_V2``,
-            ``IMAGENET1K_V1``, ``DEFAULT``) or ``None`` for random
-            initialisation (tests only; predictions are meaningless).
-        num_threads: Intra-op threads PyTorch may use for this process.
+
+def parse_analysis(raw: str, *, max_keywords: int) -> ImageAnalysis:
+    """Parse the ``{"description", "keywords"}`` JSON a vision model returned.
+
+    Raises:
+        VisionError: when the reply holds neither a description nor keywords.
+    """
+    text = clean_model_text(raw)
+    start, end = text.find("{"), text.rfind("}")
+    data: Any = None
+    if start != -1 and end > start:
+        with contextlib.suppress(ValueError):
+            data = json.loads(text[start : end + 1])
+    if not isinstance(data, dict):
+        raise VisionError("The image description could not be read.")
+    raw_keywords = data.get("keywords")
+    if isinstance(raw_keywords, str):
+        raw_keywords = [raw_keywords]
+    keywords = normalize_keywords(
+        [str(k) for k in raw_keywords] if isinstance(raw_keywords, list) else [],
+        limit=max_keywords,
+    )
+    raw_description = data.get("description")
+    description: str | None = None
+    if isinstance(raw_description, str):
+        description = " ".join(raw_description.split())[:DESCRIPTION_MAX_CHARS] or None
+    if not keywords and not description:
+        raise VisionError("The image description was empty.")
+    return ImageAnalysis(keywords=keywords, description=description)
+
+
+class OllamaImageDescriber:
+    """:class:`ImageDescriber` backed by a vision model behind :class:`OllamaClient`.
+
+    Works with Ollama Cloud, self-hosted Ollama and other OpenAI-compatible
+    chat-completions endpoints that accept ``image_url`` content parts.
     """
 
-    def __init__(self, *, weights: str | None = "IMAGENET1K_V2", num_threads: int = 2) -> None:
-        import torch
-        from torchvision.models import ResNet50_Weights, resnet50
-
-        torch.set_num_threads(num_threads)
-        # Inter-op threads can only be set once per process (before any parallel work).
-        with contextlib.suppress(RuntimeError):
-            torch.set_num_interop_threads(1)
-
-        weights_enum = ResNet50_Weights[weights] if weights else None
-        # Category names and preprocessing are static metadata: available even
-        # when the weights themselves are not downloaded (weights=None).
-        reference = weights_enum or ResNet50_Weights.IMAGENET1K_V2
-        self._categories: list[str] = list(reference.meta["categories"])
-        self._preprocess: Callable[[Image.Image], Any] = reference.transforms()
-
-        model = resnet50(weights=weights_enum)
-        model.eval()
-        self._model = model.to(memory_format=torch.channels_last)
-        self._torch = torch
+    def __init__(self, client: OllamaClient) -> None:
+        self._client = client
 
     @property
-    def categories(self) -> Sequence[str]:
-        return self._categories
+    def configured(self) -> bool:
+        return self._client.configured
 
-    def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
-        torch = self._torch
-        tensor = self._preprocess(image.convert("RGB")).unsqueeze(0)
-        tensor = tensor.contiguous(memory_format=torch.channels_last)
-        with torch.inference_mode():
-            probabilities = self._model(tensor).softmax(dim=1)[0]
-            scores, indices = probabilities.topk(min(top_k, len(self._categories)))
-        return [
-            VisionLabel(name=self._categories[index], score=float(score))
-            for score, index in zip(scores.tolist(), indices.tolist(), strict=True)
-        ]
+    @property
+    def model(self) -> str:
+        return self._client.config.model
 
-
-ClassifierFactory = Callable[[], ImageClassifier]
+    async def describe(self, image: Image.Image, max_keywords: int) -> ImageAnalysis:
+        encoded = await asyncio.to_thread(encode_jpeg_base64, image)
+        raw = await self._client.chat(build_describe_messages(encoded, max_keywords=max_keywords))
+        return parse_analysis(raw, max_keywords=max_keywords)
 
 
 class VisionService:
-    """Async façade over an :class:`ImageClassifier`."""
+    """Async façade over the configured :class:`ImageDescriber`."""
 
-    def __init__(
-        self,
-        config: VisionConfig,
-        *,
-        classifier_factory: ClassifierFactory | None = None,
-    ) -> None:
+    def __init__(self, config: VisionConfig, *, describer: ImageDescriber | None = None) -> None:
         self.config = config
-        self._factory: ClassifierFactory = classifier_factory or self._default_factory
-        self._classifier: ImageClassifier | None = None
-        self._executor = ThreadPoolExecutor(
-            max_workers=config.max_concurrency, thread_name_prefix="vision"
-        )
+        self._describer = describer
         self._semaphore = asyncio.Semaphore(config.max_concurrency)
-        self._load_lock = asyncio.Lock()
-        self._load_error: str | None = None
 
-    # ------------------------------------------------------------------ status
     @property
     def enabled(self) -> bool:
         return self.config.backend != "disabled"
 
     @property
     def ready(self) -> bool:
-        return self._classifier is not None
-
-    @property
-    def load_error(self) -> str | None:
-        return self._load_error
+        return self.enabled and self._describer is not None and self._describer.configured
 
     def health(self) -> dict[str, object]:
         """Component status for the readiness endpoint."""
         if not self.enabled:
             return {"status": "disabled"}
-        if self._classifier is not None:
-            return {"status": "ok", "backend": self.config.backend}
-        if self._load_error:
-            return {"status": "error", "error": self._load_error}
-        return {"status": "loading"}
+        if self.ready and self._describer is not None:
+            return {"status": "ok", "backend": self.config.backend, "model": self._describer.model}
+        return {"status": "error", "error": "Image description is not configured."}
 
-    # --------------------------------------------------------------- lifecycle
-    def _default_factory(self) -> ImageClassifier:
-        return ResNet50Classifier(weights=self.config.weights, num_threads=self.config.num_threads)
-
-    async def start(self) -> None:
-        """Load (and warm up) the model. Failures are recorded, not raised.
-
-        The application stays usable without vision: users can type keywords.
-        """
+    def log_status(self) -> None:
         if not self.enabled:
-            logger.info("Vision backend disabled")
-            return
-        try:
-            await self._ensure_loaded()
-        except VisionError:
-            logger.exception("Vision model failed to load; continuing without image tagging")
+            logger.info("Image description disabled")
+        elif self.ready and self._describer is not None:
+            logger.info(
+                "Image description via online model", extra={"model": self._describer.model}
+            )
+        else:
+            logger.warning("Image description is not configured (OLLAMA_API_KEY)")
 
-    async def close(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
-    async def _ensure_loaded(self) -> ImageClassifier:
-        if self._classifier is not None:
-            return self._classifier
-        async with self._load_lock:
-            if self._classifier is None:
-                started = time.perf_counter()
-                try:
-                    self._classifier = await self._run(self._build)
-                except Exception as exc:
-                    self._load_error = f"{type(exc).__name__}: {exc}"
-                    raise VisionError("The image-tagging model is unavailable.") from exc
-                self._load_error = None
-                logger.info(
-                    "Vision model ready",
-                    extra={
-                        "backend": self.config.backend,
-                        "load_seconds": round(time.perf_counter() - started, 2),
-                    },
-                )
-        return self._classifier
-
-    def _build(self) -> ImageClassifier:
-        classifier = self._factory()
-        if self.config.warmup:
-            # First inference pays one-off allocation costs; do it before users do.
-            classifier.predict(Image.new("RGB", (224, 224)), 1)
-        return classifier
-
-    def _run[T](self, func: Callable[..., T], *args: object) -> Awaitable[T]:
-        loop = asyncio.get_running_loop()
-        return loop.run_in_executor(self._executor, func, *args)
-
-    # --------------------------------------------------------------- inference
-    async def classify(self, image: Image.Image | bytes) -> list[VisionLabel]:
-        """Return the top-k labels for an (already validated) image.
-
-        Prefer passing a small decoded image (see :func:`services.images.make_preview`):
-        decoding full-size bytes here costs ~4 bytes per pixel for a model that
-        only looks at 224x224.
+    async def analyze(self, image: Image.Image) -> ImageAnalysis:
+        """Describe an (already validated, preferably downscaled) image.
 
         Raises:
             VisionError: when the model is unavailable, times out or fails.
         """
         if not self.enabled:
-            return []
-        classifier = await self._ensure_loaded()
+            return ImageAnalysis()
+        describer = self._describer
+        if describer is None or not describer.configured:
+            raise VisionError("Image description is not configured (set OLLAMA_API_KEY).")
         async with self._semaphore:
             try:
                 return await asyncio.wait_for(
-                    self._run(self._infer, classifier, image),
+                    describer.describe(image, self.config.top_k),
                     timeout=self.config.timeout_seconds,
                 )
             except TimeoutError as exc:
                 raise VisionError("Image analysis timed out.", retryable=True) from exc
             except VisionError:
                 raise
+            except OllamaError as exc:
+                raise VisionError(exc.message, retryable=exc.retryable) from exc
             except Exception as exc:
-                logger.exception("Vision inference failed")
+                logger.exception("Image description failed")
                 raise VisionError("Image analysis failed.") from exc
-
-    def _infer(self, classifier: ImageClassifier, image: Image.Image | bytes) -> list[VisionLabel]:
-        if isinstance(image, bytes):
-            with Image.open(io.BytesIO(image)) as opened:
-                opened.load()
-                return self._infer(classifier, opened)
-        predictions = classifier.predict(image, self.config.top_k)
-        labels: list[VisionLabel] = []
-        seen: set[str] = set()
-        for prediction in predictions:
-            name = " ".join(prediction.name.replace("_", " ").split())
-            if not name or name.casefold() in seen:
-                continue
-            if prediction.score < self.config.min_confidence:
-                continue
-            seen.add(name.casefold())
-            labels.append(VisionLabel(name=name, score=round(prediction.score, 4)))
-        return labels

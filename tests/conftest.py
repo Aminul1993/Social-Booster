@@ -13,14 +13,14 @@ from fastapi import FastAPI
 
 from app.config import Settings
 from app.main import create_app
-from services.vision import ClassifierFactory
+from services.vision import ImageDescriber
 from tests.helpers import (
     BUFFER_API_URL,
     BUFFER_OAUTH_URL,
     BUFFER_TOKEN_URL,
     OLLAMA_URL,
     AppClient,
-    FakeClassifier,
+    FakeDescriber,
     make_client,
 )
 
@@ -48,8 +48,6 @@ def settings_factory(tmp_path: Path) -> SettingsFactory:
             "upload_dir": tmp_path / "uploads",
             "log_format": "console",
             "log_level": "WARNING",
-            "vision_warmup": False,
-            "vision_num_threads": 1,
             "ollama_api_key": "test-ollama-key",
             "ollama_endpoint": OLLAMA_URL,
             "ollama_model": "test-model",
@@ -83,12 +81,13 @@ AppFactory = Callable[..., FastAPI]
 def app_factory(settings_factory: SettingsFactory) -> AppFactory:
     def factory(
         settings: Settings | None = None,
-        classifier: ClassifierFactory | None = None,
+        describer: ImageDescriber | None = None,
         **overrides: Any,
     ) -> FastAPI:
+        # A deterministic fake vision model unless a test passes its own describer.
         return create_app(
             settings or settings_factory(**overrides),
-            classifier_factory=classifier or FakeClassifier,
+            describer=describer or FakeDescriber(),
         )
 
     return factory

@@ -3,7 +3,7 @@
 ## Requirements
 
 * Python **3.12+** (3.12 and 3.13 are tested in CI)
-* ~2 GB disk for PyTorch (CPU build) and the ResNet-50 weights (~100 MB)
+* ~250 MB disk for the dependencies
 * Optional: Docker 24+ for the container workflow
 * Credentials: an Ollama Cloud API key and a Buffer OAuth app (or use the
   bundled mock services, see below)
@@ -19,14 +19,9 @@ pip install -r requirements-dev.txt  # runtime + test/lint tooling
 # runtime only:  pip install -r requirements.txt
 ```
 
-`requirements.txt` points pip at the CPU-only PyTorch index, so Linux does not
-download multi-GB CUDA wheels.
-
-Pre-fetch the model weights (otherwise the first start downloads them):
-
-```bash
-python scripts/download_model.py --weights IMAGENET1K_V2
-```
+Images are described by an online vision model (`VISION_MODEL`, default
+`gemma4:31b` on Ollama Cloud's free plan) using the same `OLLAMA_API_KEY` as
+copywriting, so there is no model to download.
 
 ## 2. Configure
 
@@ -101,16 +96,16 @@ BUFFER_API_URL=http://127.0.0.1:8020/graphql
 
 Posts "sent" to the mock are listed at http://127.0.0.1:8020/posts.
 
-### Without PyTorch
+### Without image description
 
-Set `VISION_BACKEND=disabled` to skip the model entirely (users type keywords
-for each image). You can then install everything except `torch`/`torchvision`.
+Set `VISION_BACKEND=disabled` to skip image analysis entirely (users type
+keywords for each image); nothing is sent to the vision provider.
 
 ## 4. Quality tooling
 
 ```bash
 pytest                      # unit + integration tests, coverage gate 90 %
-pytest -m "not torch"       # skip the real ResNet-50 graph test (faster)
+pytest -m "not integration"   # unit tests only (faster)
 ruff check .                # lint (incl. bandit security rules)
 black --check .             # formatting
 mypy app services tests scripts gunicorn.conf.py   # strict type checking
@@ -150,7 +145,7 @@ Social-Booster/
 │   ├── logging_config.py   structured logging
 │   └── metrics.py          Prometheus metrics
 ├── services/               framework-agnostic adapters
-│   ├── vision.py           ResNet-50 tagging
+│   ├── vision.py           image description (online vision model)
 │   ├── ollama.py           Ollama Cloud client + parser
 │   ├── prompts.py          prompt templates
 │   ├── buffer.py           Buffer OAuth + posting
@@ -165,7 +160,7 @@ Social-Booster/
 ├── data/                   runtime: SQLite database (git-ignored)
 ├── tests/                  unit/ and integration/
 ├── docs/                   this documentation
-├── scripts/                download_model.py, mock_upstreams.py
+├── scripts/                mock_upstreams.py
 ├── deploy/Caddyfile        TLS reverse proxy
 ├── Dockerfile, docker-compose.yml, gunicorn.conf.py
 ├── requirements.txt, requirements-dev.txt, pyproject.toml

@@ -9,7 +9,6 @@ environment variables, the ``.env`` file and Docker/Kubernetes secret files in
 from __future__ import annotations
 
 import logging
-import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from services.buffer import (
     is_legacy_url,
 )
 from services.ollama import DEFAULT_ENDPOINT, DEFAULT_MODEL
+from services.vision import DEFAULT_VISION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -121,13 +121,13 @@ class Settings(BaseSettings):
     image_max_concurrency: int = Field(default=1, ge=1, le=16)
 
     # ------------------------------------------------------------------- vision
-    vision_backend: Literal["resnet50", "disabled"] = "resnet50"
-    vision_weights: str = "IMAGENET1K_V2"
+    vision_backend: Literal["ollama", "disabled"] = "ollama"
+    # Any Ollama or OpenAI-compatible chat endpoint serving a vision-capable model.
+    vision_model: str = DEFAULT_VISION_MODEL
+    vision_endpoint: str | None = None  # default: OLLAMA_ENDPOINT
+    vision_api_key: SecretStr | None = None  # default: OLLAMA_API_KEY
     vision_top_k: int = Field(default=5, ge=1, le=20)
-    vision_min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    vision_num_threads: int = Field(default_factory=lambda: max(1, min(4, os.cpu_count() or 1)))
     vision_max_concurrency: int = Field(default=2, ge=1, le=16)
-    vision_warmup: bool = True
     vision_timeout_seconds: float = Field(default=30.0, gt=0)
 
     # ------------------------------------------------------------- Ollama Cloud
@@ -182,6 +182,8 @@ class Settings(BaseSettings):
         "token_encryption_key",
         "metrics_token",
         "session_secret",
+        "vision_endpoint",
+        "vision_api_key",
         mode="before",
     )
     @classmethod

@@ -10,8 +10,8 @@ pages and toasts for unexpected errors show the same id as "Reference".
 | `SESSION_SECRET must be set ... in production` | Production without a strong secret | Set a 32+ character `SESSION_SECRET`. |
 | `Invalid rate limit 'x'` | Malformed `RATE_LIMIT_*` | Use `<count>/<second|minute|hour|day>`, e.g. `20/minute`. |
 | `PUBLIC_BASE_URL must be an absolute http(s) URL` | Missing scheme | Use `https://social.example.com`. |
-| Readiness shows `vision: error` / banner "Image tagging is unavailable" | Weights could not be downloaded (offline host) or PyTorch missing | Run `python scripts/download_model.py` with network access (or use the Docker image, which bakes them in). The app keeps working with manual keywords. Set `VISION_BACKEND=disabled` to silence it. |
-| `pip` downloads huge CUDA wheels | Installed torch without the CPU index | Install with `pip install -r requirements.txt` (it contains `--extra-index-url https://download.pytorch.org/whl/cpu`). |
+| Readiness shows `vision: error` / banner "Automatic image description is unavailable" | No `OLLAMA_API_KEY` (or `VISION_API_KEY`) | Set the key (the vision model shares Ollama's by default). The app keeps working with manual keywords. Set `VISION_BACKEND=disabled` to silence it. |
+| `Input should be 'ollama' or 'disabled'` for `vision_backend` | `VISION_BACKEND=resnet50` left over from an older `.env` / host settings; ResNet-50 was removed | Set `VISION_BACKEND=ollama` (or delete the variable). |
 | `Control server error: Read-only file system` (Gunicorn) | Custom command without `gunicorn.conf.py` | Start with `gunicorn -c gunicorn.conf.py app.main:app` (puts the control socket on `/tmp`). |
 | Health check fails with HTTP 400 | Host not in `ALLOWED_HOSTS` | Add your domain; `localhost`/`127.0.0.1` are always allowed. |
 
@@ -33,8 +33,9 @@ pages and toasts for unexpected errors show the same id as "Reference".
 | "The file content does not match its declared image type." | Renamed file (e.g. PNG named `.jpg`) | Re-export the image properly. |
 | "larger than 10 MB" / 413 | `MAX_UPLOAD_SIZE_MB` / proxy body limit | Raise the setting **and** the proxy's limit (`client_max_body_size`, Caddy `request_body max_size`). |
 | "The image is too large (W x H pixels)" | Above `MAX_IMAGE_PIXELS` | Downscale or raise the limit (memory grows with pixels). |
-| Worker memory jumps during uploads / OOM kills | Large PNG/WebP files must be decoded at full size (40 MP PNG ~+360 MB, 40 MP WebP ~+620 MB; JPEGs stay under ~+90 MB) on top of the ~450 MB a worker needs for ResNet-50 | Lower `MAX_IMAGE_PIXELS` (e.g. `16000000`), keep `IMAGE_MAX_CONCURRENCY=1` and `IMAGE_MAX_DIMENSION` set, or set `VISION_BACKEND=disabled`. Outside Docker, also set `MALLOC_MMAP_THRESHOLD_=1048576` so freed images go back to the OS. |
-| Strange labels | ResNet-50 knows the 1,000 ImageNet classes only | Edit the keywords before generating; they steer the AI. |
+| Worker memory jumps during uploads / OOM kills | Large PNG/WebP files must be decoded at full size (40 MP PNG ~+360 MB, 40 MP WebP ~+620 MB; JPEGs stay under ~+90 MB) | Lower `MAX_IMAGE_PIXELS` (e.g. `16000000`), keep `IMAGE_MAX_CONCURRENCY=1` and `IMAGE_MAX_DIMENSION` set. Outside Docker, also set `MALLOC_MMAP_THRESHOLD_=1048576` so freed images go back to the OS. |
+| Cards say "couldn't be analysed automatically" | The vision model failed; the reason is in the log (`Image analysis failed`). HTTP 402 "not in your plan": `VISION_MODEL` needs a paid Ollama plan (use `gemma4:31b`). 429/timeouts: free-tier rate limits | Type keywords, retry later, or lower `VISION_MAX_CONCURRENCY`. |
+| Strange keywords | The vision model misread the image | Edit the keywords before generating; they steer the AI. |
 
 ## AI generation (Ollama Cloud)
 

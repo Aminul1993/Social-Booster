@@ -123,7 +123,8 @@ _HASHTAG_TOKEN_RE = re.compile(r"#[^\s#,;]+", re.UNICODE)
 _QUOTES = "\"'“”‘’`"  # noqa: RUF001 - typographic quotes models like to emit
 
 
-def _clean_model_text(raw: str) -> str:
+def clean_model_text(raw: str) -> str:
+    """Model reply without reasoning blocks and markdown code fences."""
     text = _THINK_RE.sub("", raw)
     return _FENCE_RE.sub("", text).strip()
 
@@ -186,7 +187,7 @@ def parse_copy(raw: str) -> ParsedCopy:
     Raises:
         OllamaResponseError: when no caption can be recovered.
     """
-    text = _clean_model_text(raw)
+    text = clean_model_text(raw)
     for strategy in (_parse_json, _parse_labeled, _parse_heuristic):
         parsed = strategy(text)
         if parsed is not None:
@@ -249,7 +250,7 @@ class OllamaClient:
         if self.config.api_style == "native":
             return {
                 "model": self.config.model,
-                "messages": messages,
+                "messages": messages,  # native messages carry ``images`` as-is
                 "stream": False,
                 "options": {
                     "temperature": self.config.temperature,
@@ -258,11 +259,24 @@ class OllamaClient:
             }
         return {
             "model": self.config.model,
-            "messages": messages,
+            "messages": [self._openai_message(message) for message in messages],
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "stream": False,
         }
+
+    @staticmethod
+    def _openai_message(message: ChatMessage) -> dict[str, Any]:
+        """OpenAI-style message: images become ``image_url`` content parts."""
+        images = message.get("images")
+        if not images:
+            return {"role": message["role"], "content": message["content"]}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": message["content"]}]
+        parts.extend(
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}}
+            for image in images
+        )
+        return {"role": message["role"], "content": parts}
 
     async def chat(self, messages: list[ChatMessage]) -> str:
         """Send a chat conversation and return the assistant's text."""
@@ -297,6 +311,12 @@ class OllamaClient:
         status = response.status_code
         if status in (401, 403):
             raise OllamaAuthError("The AI service rejected the API key.", status_code=status)
+        if status == 402:
+            raise OllamaError(
+                f"The AI model '{self.config.model}' is not included in your plan; "
+                "choose another model.",
+                status_code=status,
+            )
         if status == 404:
             raise OllamaError(
                 f"The AI model '{self.config.model}' or endpoint was not found.",

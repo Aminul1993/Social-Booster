@@ -30,6 +30,10 @@ class TestDefaults:
         assert settings.buffer_token_url == "https://auth.buffer.com/token"
         assert settings.buffer_api_url == "https://api.buffer.com"
         assert settings.buffer_scope == "account:read posts:write offline_access"
+        assert settings.vision_backend == "ollama"
+        assert settings.vision_model == "gemma4:31b"
+        assert settings.vision_endpoint is None  # falls back to OLLAMA_ENDPOINT
+        assert settings.vision_api_key is None  # falls back to OLLAMA_API_KEY
 
     def test_warns_about_legacy_buffer_urls(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="app.config"):

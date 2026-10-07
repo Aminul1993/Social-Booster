@@ -33,7 +33,7 @@ from services.images import (
 from services.ollama import OllamaClient
 from services.prompts import CopyRequest, Tone
 from services.storage import Storage
-from services.vision import VisionService
+from services.vision import ImageAnalysis, VisionService
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,8 @@ class DraftService:
             extension=processed.format.extension,
             content_type=processed.format.content_type,
         )
-        labels, vision_error = await self._tag(processed.preview)
+        analysis, vision_error = await self._analyze(processed.preview)
+        labels = [Label(name=keyword) for keyword in analysis.keywords]
         draft = Draft(
             session_id=session_id,
             image_key=stored.key,
@@ -155,6 +156,7 @@ class DraftService:
             height=processed.height,
             size_bytes=stored.size,
             labels=labels,
+            description=analysis.description,
             vision_error=vision_error,
             keywords=[label.name for label in labels],
         )
@@ -187,18 +189,18 @@ class DraftService:
                 preview=self._vision.enabled,
             )
 
-    async def _tag(self, preview: Image.Image | None) -> tuple[list[Label], str | None]:
+    async def _analyze(self, preview: Image.Image | None) -> tuple[ImageAnalysis, str | None]:
         if preview is None or not self._vision.enabled:
-            return [], None
+            return ImageAnalysis(), None
         started = time.perf_counter()
         try:
-            results = await self._vision.classify(preview)
+            analysis = await self._vision.analyze(preview)
         except VisionError as exc:
             self._metrics.vision_failures.inc()
-            logger.warning("Image tagging failed", extra={"error": exc.message})
-            return [], exc.message
+            logger.warning("Image analysis failed", extra={"error": exc.message})
+            return ImageAnalysis(), exc.message
         self._metrics.vision_latency.observe(time.perf_counter() - started)
-        return [Label(name=r.name, score=min(max(r.score, 0.0), 1.0)) for r in results], None
+        return analysis, None
 
     # ----------------------------------------------------------------- generate
     async def generate(self, session_id: str, draft_id: str, *, keywords: str, tone: Tone) -> Draft:
@@ -213,6 +215,7 @@ class DraftService:
             caption_max_chars=self.limits.caption_max_chars,
             min_hashtags=self.limits.hashtags_min,
             max_hashtags=self.limits.hashtags_max,
+            description=draft.description,
         )
         started = time.perf_counter()
         try:

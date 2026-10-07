@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import threading
 from typing import Any
 
+import httpx
 import pytest
+import respx
 from PIL import Image
 
+from app.main import create_app
 from services.images import ImageProcessor, ProcessedImage
-from services.vision import VisionLabel
-from tests.conftest import AppFactory
+from tests.conftest import AppFactory, SettingsFactory
 from tests.helpers import (
+    GOOD_COPY,
+    OLLAMA_URL,
     AppClient,
-    FailingClassifier,
-    FakeClassifier,
+    FailingDescriber,
+    FakeDescriber,
     make_client,
     make_image,
+    ollama_reply,
     toast,
 )
 
@@ -48,8 +54,8 @@ async def test_multiple_images_become_tagged_cards(client: AppClient) -> None:
     ids = DRAFT_ID_RE.findall(response.text)
     assert len(ids) == 2
     html = response.text
-    assert "golden retriever" in html  # labels + confidence
-    assert "82%" in html
+    assert "A golden retriever chases a tennis ball across a sunny lawn." in html
+    assert '<li class="label-badge">golden retriever</li>' in html
     assert 'value="golden retriever, tennis ball, Labrador retriever"' in html  # keywords
     assert "Generate caption &amp; hashtags" in html
 
@@ -135,7 +141,7 @@ async def test_limits(app_factory: AppFactory) -> None:
 
 
 async def test_vision_failure_degrades_gracefully(app_factory: AppFactory) -> None:
-    async with make_client(app_factory(classifier=FailingClassifier)) as client:
+    async with make_client(app_factory(describer=FailingDescriber())) as client:
         response = await client.upload(("x.png", make_image(), "image/png"))
         assert response.status_code == 200
         assert "be analysed automatically" in response.text
@@ -173,19 +179,13 @@ async def test_images_are_decoded_one_at_a_time(
 
 
 async def test_vision_gets_a_downscaled_preview(app_factory: AppFactory) -> None:
-    seen: list[tuple[int, int]] = []
-
-    class Recording(FakeClassifier):
-        def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
-            seen.append(image.size)
-            return super().predict(image, top_k)
-
-    async with make_client(app_factory(classifier=Recording)) as client:
+    describer = FakeDescriber()
+    async with make_client(app_factory(describer=describer)) as client:
         photo = make_image("JPEG", size=(1600, 1200))
         response = await client.upload(("photo.jpg", photo, "image/jpeg"))
         assert response.status_code == 200
         assert "golden retriever" in response.text
-    assert seen == [(683, 512)]
+    assert describer.calls == [((683, 512), 5)]  # the small preview, not the upload
 
 
 async def test_large_images_are_downscaled(client: AppClient) -> None:
@@ -232,3 +232,58 @@ async def test_delete_flow(client: AppClient) -> None:
 async def test_invalid_draft_id_path(client: AppClient) -> None:
     response = await client.delete("/drafts/../../etc")
     assert response.status_code in (404, 405, 422)
+
+
+async def test_description_flows_into_the_copy_prompt(
+    app_factory: AppFactory, mock_http: respx.MockRouter
+) -> None:
+    describer = FakeDescriber()
+    copy_route = mock_http.post(OLLAMA_URL).respond(json=ollama_reply(GOOD_COPY))
+    async with make_client(app_factory(describer=describer)) as client:
+        response = await client.upload(("dog.png", make_image(), "image/png"))
+        assert response.status_code == 200
+        match = DRAFT_ID_RE.search(response.text)
+        assert match
+        generated = await client.post(
+            "/generate", data={"draft_id": match.group(1), "keywords": "golden retriever"}
+        )
+        assert generated.status_code == 200
+    prompt = json.loads(copy_route.calls.last.request.content)["messages"][1]["content"]
+    assert "A golden retriever chases a tennis ball across a sunny lawn." in prompt
+
+
+def vision_and_copy(request: httpx.Request) -> httpx.Response:
+    """One Ollama endpoint, two models: the vision model describes, the other writes."""
+    body = json.loads(request.content)
+    if body["model"] == "vision-test":
+        answer = json.dumps({"description": "A red square.", "keywords": ["red", "square"]})
+        return httpx.Response(200, json=ollama_reply(answer))
+    return httpx.Response(200, json=ollama_reply(GOOD_COPY))
+
+
+async def test_vision_model_over_http(
+    settings_factory: SettingsFactory, mock_http: respx.MockRouter
+) -> None:
+    route = mock_http.post(OLLAMA_URL).mock(side_effect=vision_and_copy)
+    app = create_app(settings_factory(vision_model="vision-test"))  # the real describer
+    async with make_client(app) as client:
+        response = await client.upload(("x.png", make_image(), "image/png"))
+        assert response.status_code == 200
+        assert "A red square." in response.text
+        assert 'value="red, square"' in response.text
+    request = route.calls.last.request
+    assert request.headers["Authorization"] == "Bearer test-ollama-key"  # shares OLLAMA_API_KEY
+    content = json.loads(request.content)["messages"][1]["content"]
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+async def test_vision_model_outside_the_plan_degrades_gracefully(
+    settings_factory: SettingsFactory, mock_http: respx.MockRouter
+) -> None:
+    mock_http.post(OLLAMA_URL).respond(402, json={"error": {"message": "not in the Free plan"}})
+    async with make_client(create_app(settings_factory())) as client:
+        response = await client.upload(("x.png", make_image(), "image/png"))
+        assert response.status_code == 200
+        assert "be analysed automatically" in response.text
+        metrics = (await client.get("/metrics")).text
+        assert "mab_vision_failures_total 1.0" in metrics

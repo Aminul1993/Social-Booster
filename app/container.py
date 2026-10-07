@@ -2,7 +2,7 @@
 
 Routes receive services through FastAPI dependencies that read this container
 from ``app.state`` (see :mod:`app.dependencies`). Tests build the app with
-their own settings and may inject a fake image classifier or HTTP transport.
+their own settings and may inject a fake image describer or HTTP transport.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from services.images import ImageProcessor
 from services.ollama import OllamaClient, OllamaConfig
 from services.retry import RetryPolicy
 from services.storage import LocalFileStorage, Storage
-from services.vision import ClassifierFactory, VisionConfig, VisionService
+from services.vision import ImageDescriber, OllamaImageDescriber, VisionConfig, VisionService
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,8 @@ class ServiceContainer:
     # -------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         await self.database.connect()
-        self._tasks.append(asyncio.create_task(self._load_vision(), name="vision-load"))
+        self.vision.log_status()
+        self.metrics.vision_ready.set(1 if self.vision.ready else 0)
         if self.settings.draft_retention_hours > 0:
             self._tasks.append(asyncio.create_task(self._maintenance(), name="maintenance"))
         logger.info(
@@ -77,14 +78,9 @@ class ServiceContainer:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks.clear()
-        await self.vision.close()
         await self.http.aclose()
         await self.database.close()
         logger.info("Application stopped")
-
-    async def _load_vision(self) -> None:
-        await self.vision.start()
-        self.metrics.vision_ready.set(1 if self.vision.ready else 0)
 
     async def run_maintenance(self) -> None:
         """Delete expired drafts/images and tokens of expired sessions."""
@@ -111,7 +107,7 @@ class ServiceContainer:
 def build_container(
     settings: Settings,
     *,
-    classifier_factory: ClassifierFactory | None = None,
+    describer: ImageDescriber | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> ServiceContainer:
     metrics = AppMetrics()
@@ -132,15 +128,11 @@ def build_container(
     vision = VisionService(
         VisionConfig(
             backend=settings.vision_backend,
-            weights=settings.vision_weights or None,
             top_k=settings.vision_top_k,
-            min_confidence=settings.vision_min_confidence,
-            num_threads=settings.vision_num_threads,
             max_concurrency=settings.vision_max_concurrency,
-            warmup=settings.vision_warmup,
             timeout_seconds=settings.vision_timeout_seconds,
         ),
-        classifier_factory=classifier_factory,
+        describer=describer or _online_describer(settings, http),
     )
     ollama = OllamaClient(
         OllamaConfig(
@@ -205,4 +197,26 @@ def build_container(
         tokens=tokens,
         drafts=drafts,
         rate_limiter=RateLimiter(),
+    )
+
+
+def _online_describer(settings: Settings, http: httpx.AsyncClient) -> ImageDescriber | None:
+    """Vision model client; shares Ollama's endpoint and key unless VISION_* overrides are set."""
+    if settings.vision_backend != "ollama":
+        return None
+    api_key = settings.vision_api_key or settings.ollama_api_key
+    return OllamaImageDescriber(
+        OllamaClient(
+            OllamaConfig(
+                endpoint=settings.vision_endpoint or settings.ollama_endpoint,
+                model=settings.vision_model,
+                api_key=Settings.secret_value(api_key),
+                temperature=0.2,
+                # Headroom for models that reason before answering.
+                max_tokens=1024,
+                timeout_seconds=settings.vision_timeout_seconds,
+                retry=RetryPolicy(max_attempts=settings.ollama_max_retries),
+            ),
+            http,
+        )
     )

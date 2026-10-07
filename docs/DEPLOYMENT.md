@@ -1,8 +1,9 @@
 # Deployment
 
 The application ships as one container: Gunicorn managing Uvicorn workers,
-CPU-only PyTorch with the ResNet-50 weights baked in, SQLite and the upload
-directory on volumes, and an optional Caddy reverse proxy for HTTPS.
+SQLite and the upload directory on volumes, and an optional Caddy reverse
+proxy for HTTPS. Images are described by an online vision model, so there is
+no ML runtime in the image.
 
 ## 1. Checklist
 
@@ -48,8 +49,7 @@ docker run -d --name mab -p 8000:8000 \
   marketing-ai-builder:1.0.0
 ```
 
-Build arguments: `PYTHON_VERSION` (default `3.12`), `VISION_WEIGHTS`
-(default `IMAGENET1K_V2`, downloaded at build time into `/opt/torch`).
+Build argument: `PYTHON_VERSION` (default `3.12`).
 
 The image runs as uid `10001`, exposes `8000`, declares a `HEALTHCHECK` on
 `/health`, and starts `gunicorn -c gunicorn.conf.py app.main:app`.
@@ -58,7 +58,6 @@ The image runs as uid `10001`, exposes `8000`, declares a `HEALTHCHECK` on
 
 ```bash
 pip install -r requirements.txt
-python scripts/download_model.py
 export ENVIRONMENT=production SESSION_SECRET=... PUBLIC_BASE_URL=https://...
 gunicorn -c gunicorn.conf.py app.main:app
 ```
@@ -86,10 +85,11 @@ On Windows servers use `uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | Resource | Guidance |
 |---|---|
-| Memory | ~400 MB per worker (PyTorch + ResNet-50) + ~100 MB base. 2 workers -> ~1 GB; compose limit is 3 GB. Uploads add memory per worker while an image is processed (`IMAGE_MAX_CONCURRENCY` images at a time): ~+90 MB for JPEGs of any size (decoded at reduced scale down to `IMAGE_MAX_DIMENSION`), ~4-8 bytes per pixel for PNG (~+360 MB for 40 MP with transparency) and ~16 for WebP (~+620 MB for 40 MP). Size `MAX_IMAGE_PIXELS` to fit. |
-| CPU | One ResNet-50 inference ~0.1-0.3 s per core. Keep `WEB_CONCURRENCY x VISION_NUM_THREADS` <= cores. |
-| Disk | Image ~1.8 GB. Uploads: up to `MAX_UPLOAD_SIZE_MB` per draft, purged after `DRAFT_RETENTION_HOURS`. |
-| Start-up | The model loads in the background (~3 s); `/health` is live immediately, `/health/ready` reports `vision: loading` until done. |
+| Memory | ~110 MB for the whole container idle (2 workers; measured), ~210 MB peak while uploading a batch of large JPEGs. Uploads add memory per worker while an image is processed (`IMAGE_MAX_CONCURRENCY` images at a time): ~+90 MB for JPEGs of any size (decoded at reduced scale down to `IMAGE_MAX_DIMENSION`), ~4-8 bytes per pixel for PNG (~+360 MB for 40 MP with transparency) and ~16 for WebP (~+620 MB for 40 MP). Size `MAX_IMAGE_PIXELS` to fit. |
+| CPU | Light: image description runs at the vision provider (~2 s per image on Ollama Cloud); locally only Pillow decoding/re-encoding. |
+| Network | Each upload sends a <=512 px JPEG preview (~50-100 kB) to the vision provider; its free tier has rate limits. |
+| Disk | Image ~320 MB. Uploads: up to `MAX_UPLOAD_SIZE_MB` per draft, purged after `DRAFT_RETENTION_HOURS`. |
+| Start-up | Instant: there is no model to load; `/health/ready` reports `vision: ok` once an API key is configured. |
 
 ## 6. Health, metrics, logs
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,7 +31,7 @@ def draft(session_id: str = "s1", **overrides: object) -> Draft:
         "width": 10,
         "height": 10,
         "size_bytes": 100,
-        "labels": [Label(name="dog", score=0.9)],
+        "labels": [Label(name="dog")],
         "keywords": ["dog"],
     }
     values.update(overrides)
@@ -54,6 +55,21 @@ class TestDatabase:
 
 
 class TestDraftRepository:
+    async def test_drafts_saved_with_label_scores_still_load(self, db: Database) -> None:
+        """Drafts from the ResNet-50 era stored a confidence per label."""
+        repo = DraftRepository(db)
+        saved = draft("s1")
+        await repo.add(saved)
+        legacy = saved.model_dump(mode="json")
+        legacy["labels"] = [{"name": "dog", "score": 0.9}]
+        await db.conn.execute(
+            "UPDATE drafts SET data = ? WHERE id = ?", (json.dumps(legacy), saved.id)
+        )
+        await db.conn.commit()
+        loaded = await repo.get(saved.id, "s1")
+        assert loaded is not None
+        assert loaded.labels == [Label(name="dog")]
+
     async def test_crud_is_scoped_to_session(self, db: Database) -> None:
         repo = DraftRepository(db)
         mine = draft("s1")
