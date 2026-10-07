@@ -1,3 +1,3 @@
-"""AI Marketing Post Builder - FastAPI application package."""
+"""Social Booster - FastAPI application package."""
 
 __version__ = "1.0.0"

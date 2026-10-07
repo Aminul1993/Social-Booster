@@ -292,7 +292,7 @@ class TestOps:
         response = await client.get("/static/css/style.css", headers={"Accept-Encoding": "gzip"})
         assert response.status_code == 200
         assert response.headers["content-encoding"] == "gzip"
-        assert "AI Marketing Post Builder" in response.text  # httpx transparently decompresses
+        assert "Social Booster" in response.text  # httpx transparently decompresses
 
 
 # -------------------------------------------------------------------- module wiring

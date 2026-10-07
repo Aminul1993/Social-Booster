@@ -16,7 +16,7 @@ pages. Invalid values stop the application at start-up with a clear message.
 
 | Variable | Default | Description |
 |---|---|---|
-| `APP_NAME` | `AI Marketing Post Builder` | Shown in the UI and OpenAPI title. |
+| `APP_NAME` | `Social Booster` | Shown in the UI and OpenAPI title. |
 | `ENVIRONMENT` | `development` | `development`, `production` or `test`. Production requires `SESSION_SECRET`, enables secure cookies + HSTS and hides API docs. |
 | `DEBUG` | `false` | FastAPI debug mode. Never enable in production. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |

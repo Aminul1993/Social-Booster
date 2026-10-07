@@ -1,6 +1,6 @@
 # Architecture
 
-AI Marketing Post Builder is a single FastAPI service that renders HTML with
+Social Booster is a single FastAPI service that renders HTML with
 Jinja2 and uses HTMX for in-page updates. There is no separate front-end build:
 the browser loads one page, and every interaction (upload, AI generation,
 autosave, scheduling) is a small HTTP request that returns an HTML fragment.

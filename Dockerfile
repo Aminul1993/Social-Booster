@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # -----------------------------------------------------------------------------
-# AI Marketing Post Builder - production image
+# Social Booster - production image
 #   * multi-stage: build tools never reach the runtime image
 #   * small: images are described by an online vision model, no ML runtime
 #   * non-root user, read-only friendly, health-checked

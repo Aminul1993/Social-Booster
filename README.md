@@ -1,4 +1,4 @@
-# AI Marketing Post Builder
+# Social Booster
 
 Turn photos into ready-to-post social content in three steps:
 

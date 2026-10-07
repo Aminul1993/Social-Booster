@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------- application
-    app_name: str = "AI Marketing Post Builder"
+    app_name: str = "Social Booster"
     environment: Environment = Environment.DEVELOPMENT
     debug: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

@@ -1,5 +1,5 @@
 /* =============================================================================
-   AI Marketing Post Builder - progressive enhancements around HTMX.
+   Social Booster - progressive enhancements around HTMX.
    All server communication is done by HTMX attributes in the templates; this
    file only handles UI glue: toasts, drag & drop, previews, progress, local
    time formatting, counters and the theme toggle. No eval, no inline code.

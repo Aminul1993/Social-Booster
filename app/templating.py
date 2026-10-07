@@ -50,7 +50,7 @@ def _common_context(request: Request) -> dict[str, Any]:
     container = getattr(request.app.state, "container", None)
     settings = getattr(container, "settings", None)
     return {
-        "app_name": getattr(settings, "app_name", "AI Marketing Post Builder"),
+        "app_name": getattr(settings, "app_name", "Social Booster"),
         "app_version": __version__,
         "csrf_token": get_csrf_token(request),
         "htmx_config": HTMX_CONFIG,
