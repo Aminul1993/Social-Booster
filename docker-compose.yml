@@ -1,0 +1,70 @@
+# Production-like stack.
+#
+#   cp .env.example .env      # then set SESSION_SECRET, OLLAMA_API_KEY, BUFFER_*
+#   docker compose up -d --build
+#   open http://localhost:8000
+#
+# HTTPS with automatic certificates (Caddy):
+#   DOMAIN=social.example.com docker compose --profile tls up -d --build
+name: marketing-ai-builder
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        VISION_WEIGHTS: ${VISION_WEIGHTS:-IMAGENET1K_V2}
+    image: marketing-ai-builder:1.0.0
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: production
+      # Behind Caddy the X-Forwarded-* headers come from the compose network.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - uploads:/app/uploads
+      - data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 3g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  uploads:
+  data:
+  caddy_data:
+  caddy_config:

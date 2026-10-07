@@ -1,0 +1,164 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marketing-ai-builder"
+version = "1.0.0"
+description = "AI-powered social-media post builder: image tagging (ResNet-50), copy generation (Ollama Cloud) and scheduling (Buffer)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Marketing AI Builder maintainers" }]
+classifiers = [
+    "Framework :: FastAPI",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+# Runtime dependencies (exact pins live in requirements.txt, which also points pip
+# at the CPU-only PyTorch index).
+dependencies = [
+    "fastapi>=0.142,<0.143",
+    "uvicorn[standard]>=0.54",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.32",
+    "aiofiles>=25.1",
+    "httpx>=0.28.1,<0.29",
+    "itsdangerous>=2.2",
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.15",
+    "python-dotenv>=1.2",
+    "aiosqlite>=0.22",
+    "cryptography>=50",
+    "prometheus-client>=0.26",
+    "tzdata>=2026.5",
+    "pillow>=12.3",
+    "torch>=2.14",
+    "torchvision>=0.29",
+]
+
+[project.optional-dependencies]
+server = [
+    "gunicorn>=26.2; sys_platform != 'win32'",
+    "uvicorn-worker>=0.4; sys_platform != 'win32'",
+]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "respx>=0.23",
+    "asgi-lifespan>=2.1",
+    "ruff>=0.16",
+    "black>=26.10",
+    "mypy>=2.4",
+    "types-aiofiles",
+    "pre-commit>=4.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*", "services*"]
+
+# --------------------------------------------------------------------------- black
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "uploads", "data", "static/vendor"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "S",     # bandit (security)
+    "SIM",   # simplify
+    "C4",    # comprehensions
+    "N",     # naming
+    "RET",   # return statements
+    "PT",    # pytest style
+    "ASYNC", # async pitfalls
+    "T20",   # no print()
+    "RUF",   # ruff-specific
+]
+ignore = [
+    "E501", # line length is enforced by black
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106", "S108", "S311"]
+"scripts/*.py" = ["T201"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "services", "tests"]
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+pretty = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+exclude = ["^\\.venv/", "^uploads/", "^data/", "^build/"]
+
+[[tool.mypy.overrides]]
+module = ["torchvision.*", "respx.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=app",
+    "--cov=services",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=90",
+]
+markers = [
+    "integration: end-to-end workflow tests through the ASGI app",
+    "torch: tests that execute the real torchvision ResNet-50 graph",
+]
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
+
+# --------------------------------------------------------------------------- coverage
+[tool.coverage.run]
+branch = true
+source = ["app", "services"]
+omit = ["app/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "^\\s*\\.\\.\\.$",
+]

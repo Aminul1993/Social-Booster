@@ -1,0 +1,38 @@
+# Runtime dependencies (exact pins). Install with:  pip install -r requirements.txt
+#
+# The extra index serves CPU-only PyTorch wheels (~200 MB instead of multi-GB CUDA
+# builds on Linux). On Windows/macOS the CPU build is chosen as well.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- web framework ------------------------------------------------------------
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+jinja2==3.1.6
+python-multipart==0.0.32
+aiofiles==25.1.0
+itsdangerous==2.2.0
+
+# --- production process manager (Linux/macOS only; use uvicorn on Windows) -----
+gunicorn==26.2.0 ; sys_platform != "win32"
+uvicorn-worker==0.4.0 ; sys_platform != "win32"
+
+# --- configuration / validation -------------------------------------------------
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.4
+
+# --- outbound HTTP (Ollama Cloud, Buffer) ---------------------------------------
+httpx==0.28.1
+
+# --- persistence / security -----------------------------------------------------
+aiosqlite==0.22.1
+cryptography==50.0.2
+tzdata==2026.5
+
+# --- observability ---------------------------------------------------------------
+prometheus-client==0.26.0
+
+# --- vision (ResNet-50) -----------------------------------------------------------
+pillow==12.3.0
+torch==2.14.1
+torchvision==0.29.1

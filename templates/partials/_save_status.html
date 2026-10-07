@@ -1,0 +1,6 @@
+{# Autosave feedback for the caption/hashtag fields of one card. #}
+{% if errors %}
+<span class="text-danger" role="alert">Not saved: {{ errors.values() | join(" ") }}</span>
+{% else %}
+<span class="text-success save-ok">Saved <time datetime="{{ draft.updated_at | iso }}">{{ draft.updated_at.strftime("%H:%M:%S") }} UTC</time></span>
+{% endif %}

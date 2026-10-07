@@ -1,0 +1,34 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# runtime data
+uploads/*
+!uploads/.gitkeep
+data/*
+!data/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

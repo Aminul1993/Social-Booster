@@ -1,0 +1,604 @@
+/* =============================================================================
+   AI Marketing Post Builder - theme on top of Bootstrap 5.3
+   Light/dark via Bootstrap colour modes ([data-bs-theme]).
+   No inline styles anywhere: the Content-Security-Policy forbids them.
+   ========================================================================== */
+
+:root {
+    --mab-brand: #5b4ff5;
+    --mab-brand-rgb: 91, 79, 245;
+    --mab-brand-hover: #4a3ee0;
+    --mab-brand-active: #3f34c9;
+    --mab-accent: #ff7a59;
+    --mab-radius: 1rem;
+    --mab-radius-sm: 0.6rem;
+    --mab-surface: #ffffff;
+    --mab-page-bg: #f5f6fb;
+    --mab-page-glow: rgba(91, 79, 245, 0.08);
+    --mab-border: rgba(17, 24, 39, 0.08);
+    --mab-shadow: 0 1px 2px rgba(17, 24, 39, 0.04), 0 8px 24px rgba(17, 24, 39, 0.06);
+
+    --bs-primary: var(--mab-brand);
+    --bs-primary-rgb: var(--mab-brand-rgb);
+    --bs-link-color: var(--mab-brand);
+    --bs-link-color-rgb: var(--mab-brand-rgb);
+    --bs-link-hover-color: var(--mab-brand-hover);
+    --bs-focus-ring-color: rgba(var(--mab-brand-rgb), 0.3);
+    --bs-border-radius: 0.6rem;
+    --bs-border-radius-lg: 0.85rem;
+}
+
+[data-bs-theme="dark"] {
+    --mab-brand: #8b82ff;
+    --mab-brand-rgb: 139, 130, 255;
+    --mab-brand-hover: #a39cff;
+    --mab-brand-active: #b7b1ff;
+    --mab-surface: #1b1d27;
+    --mab-page-bg: #11131a;
+    --mab-page-glow: rgba(139, 130, 255, 0.12);
+    --mab-border: rgba(255, 255, 255, 0.08);
+    --mab-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --bs-body-bg: #11131a;
+    --bs-tertiary-bg: #1b1d27;
+}
+
+/* ------------------------------------------------------------------ base */
+html {
+    scroll-padding-top: 5rem;
+}
+
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background:
+        radial-gradient(1200px 500px at 10% -10%, var(--mab-page-glow), transparent 60%),
+        radial-gradient(900px 400px at 100% 0%, rgba(255, 122, 89, 0.06), transparent 60%),
+        var(--mab-page-bg);
+    background-attachment: fixed;
+}
+
+main {
+    flex: 1 0 auto;
+}
+
+.min-w-0 {
+    min-width: 0;
+}
+
+.skip-link {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 2000;
+    padding: 0.5rem 1rem;
+    border-radius: var(--mab-radius-sm);
+    background: var(--mab-brand);
+    color: #fff;
+}
+
+.icon {
+    width: 1.1em;
+    height: 1.1em;
+    flex-shrink: 0;
+    vertical-align: -0.15em;
+}
+
+.icon-lg {
+    width: 2.25rem;
+    height: 2.25rem;
+}
+
+.icon-xl {
+    width: 3rem;
+    height: 3rem;
+}
+
+.card {
+    --bs-card-border-color: var(--mab-border);
+    --bs-card-border-radius: var(--mab-radius);
+    --bs-card-bg: var(--mab-surface);
+}
+
+.shadow-sm {
+    box-shadow: var(--mab-shadow) !important;
+}
+
+/* --------------------------------------------------------------- buttons */
+.btn-primary {
+    --bs-btn-bg: var(--mab-brand);
+    --bs-btn-border-color: var(--mab-brand);
+    --bs-btn-hover-bg: var(--mab-brand-hover);
+    --bs-btn-hover-border-color: var(--mab-brand-hover);
+    --bs-btn-active-bg: var(--mab-brand-active);
+    --bs-btn-active-border-color: var(--mab-brand-active);
+    --bs-btn-disabled-bg: var(--mab-brand);
+    --bs-btn-disabled-border-color: var(--mab-brand);
+    --bs-btn-focus-shadow-rgb: var(--mab-brand-rgb);
+}
+
+[data-bs-theme="dark"] .btn-primary {
+    --bs-btn-color: #0d0b2b;
+    --bs-btn-hover-color: #0d0b2b;
+    --bs-btn-active-color: #0d0b2b;
+    --bs-btn-disabled-color: #0d0b2b;
+}
+
+.btn-outline-primary {
+    --bs-btn-color: var(--mab-brand);
+    --bs-btn-border-color: var(--mab-brand);
+    --bs-btn-hover-bg: var(--mab-brand);
+    --bs-btn-hover-border-color: var(--mab-brand);
+    --bs-btn-active-bg: var(--mab-brand-active);
+    --bs-btn-active-border-color: var(--mab-brand-active);
+    --bs-btn-disabled-color: var(--mab-brand);
+    --bs-btn-disabled-border-color: var(--mab-brand);
+    --bs-btn-focus-shadow-rgb: var(--mab-brand-rgb);
+}
+
+.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+}
+
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus,
+.btn-check:focus-visible + .btn {
+    border-color: rgba(var(--mab-brand-rgb), 0.6);
+    box-shadow: 0 0 0 0.2rem rgba(var(--mab-brand-rgb), 0.2);
+}
+
+.form-check-input:checked {
+    background-color: var(--mab-brand);
+    border-color: var(--mab-brand);
+}
+
+/* --------------------------------------------------------------- navbar */
+.app-navbar {
+    background: color-mix(in srgb, var(--mab-surface) 82%, transparent);
+    backdrop-filter: saturate(180%) blur(12px);
+    border-color: var(--mab-border) !important;
+}
+
+.brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.6rem;
+    color: #fff;
+    background: linear-gradient(135deg, var(--mab-brand), var(--mab-accent));
+}
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+}
+
+[data-bs-theme="dark"] .theme-icon-light,
+[data-bs-theme="light"] .theme-icon-dark {
+    display: none;
+}
+
+.buffer-menu {
+    min-width: 16rem;
+    max-width: min(22rem, calc(100vw - 2rem));
+}
+
+.avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.avatar-fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--mab-brand);
+}
+
+/* ----------------------------------------------------------------- hero */
+.hero h1 {
+    letter-spacing: -0.02em;
+}
+
+.hero .lead {
+    max-width: 46rem;
+}
+
+.step {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.85rem 0.35rem 0.4rem;
+    border-radius: 999px;
+    background: var(--mab-surface);
+    border: 1px solid var(--mab-border);
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--mab-brand);
+}
+
+[data-bs-theme="dark"] .step-number {
+    color: #0d0b2b;
+}
+
+/* --------------------------------------------------------------- upload */
+.dropzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 11rem;
+    padding: 2rem 1rem;
+    text-align: center;
+    border: 2px dashed rgba(var(--mab-brand-rgb), 0.35);
+    border-radius: var(--mab-radius);
+    background: rgba(var(--mab-brand-rgb), 0.03);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone.is-dragover {
+    border-color: var(--mab-brand);
+    background: rgba(var(--mab-brand-rgb), 0.07);
+}
+
+.dropzone.is-dragover {
+    transform: scale(1.01);
+}
+
+.dropzone:has(input:focus-visible) {
+    outline: 3px solid rgba(var(--mab-brand-rgb), 0.45);
+    outline-offset: 3px;
+}
+
+.dropzone:has(input:disabled) {
+    cursor: progress;
+    opacity: 0.7;
+}
+
+.dropzone-icon {
+    color: var(--mab-brand);
+}
+
+.dropzone-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+}
+
+.dropzone-hint {
+    font-size: 0.85rem;
+    color: var(--bs-secondary-color);
+}
+
+.upload-previews {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.upload-previews:not(:empty) {
+    margin-top: 1rem;
+}
+
+.upload-preview {
+    position: relative;
+    width: 4.5rem;
+    height: 4.5rem;
+    margin: 0;
+    border-radius: var(--mab-radius-sm);
+    overflow: hidden;
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--mab-border);
+}
+
+.upload-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.upload-preview.is-invalid {
+    outline: 2px solid var(--bs-danger);
+}
+
+/* HTMX indicators (htmx's own inline styles are disabled for the CSP). */
+.htmx-indicator {
+    display: none;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+    display: block;
+}
+
+.upload-progress {
+    margin-top: 1rem;
+}
+
+.upload-progress .progress-bar {
+    width: 0;
+    background-color: var(--mab-brand);
+    transition: width 0.2s ease;
+}
+
+/* --------------------------------------------------------------- drafts */
+.drafts-section:has(.draft-card) .empty-state {
+    display: none;
+}
+
+.draft-col {
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.draft-col.htmx-added {
+    opacity: 0;
+    transform: translateY(6px);
+}
+
+.draft-col.htmx-swapping {
+    opacity: 0;
+    transform: scale(0.98);
+}
+
+.draft-media {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    overflow: hidden;
+    border-top-left-radius: var(--mab-radius);
+    border-top-right-radius: var(--mab-radius);
+    background: var(--bs-tertiary-bg);
+}
+
+.draft-image-btn {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: zoom-in;
+}
+
+.draft-image-btn:focus-visible {
+    outline: 3px solid rgba(var(--mab-brand-rgb), 0.6);
+    outline-offset: -3px;
+}
+
+.draft-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.4s ease;
+}
+
+.draft-image-btn:hover .draft-image {
+    transform: scale(1.03);
+}
+
+.draft-image-zoom {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    display: inline-flex;
+    padding: 0.4rem;
+    border-radius: 50%;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.draft-image-btn:hover .draft-image-zoom,
+.draft-image-btn:focus-visible .draft-image-zoom {
+    opacity: 1;
+}
+
+.draft-status {
+    position: absolute;
+    top: 0.6rem;
+    left: 0.6rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Shimmer over the image while the card is busy (generate / schedule). */
+.draft-card:has(.btn.htmx-request) .draft-media::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        100deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.35) 50%,
+        transparent 80%
+    );
+    background-size: 200% 100%;
+    animation: mab-shimmer 1.2s linear infinite;
+}
+
+@keyframes mab-shimmer {
+    from {
+        background-position: 200% 0;
+    }
+
+    to {
+        background-position: -200% 0;
+    }
+}
+
+.label-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--mab-brand-active);
+    background: rgba(var(--mab-brand-rgb), 0.1);
+}
+
+[data-bs-theme="dark"] .label-badge {
+    color: var(--mab-brand-active);
+}
+
+.label-score {
+    font-size: 0.7rem;
+    opacity: 0.7;
+}
+
+/* Busy state for action buttons. */
+.btn-spinner,
+.btn-label-busy {
+    display: none;
+}
+
+.btn.htmx-request .btn-spinner {
+    display: inline-block;
+}
+
+.btn.htmx-request .btn-label-busy {
+    display: inline;
+}
+
+.btn.htmx-request .btn-label-idle,
+.btn.htmx-request .btn-icon-idle {
+    display: none;
+}
+
+.copy-fields.htmx-request .save-status {
+    opacity: 0.6;
+}
+
+.save-ok {
+    animation: mab-fade-in 0.3s ease;
+}
+
+@keyframes mab-fade-in {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+.profile-list {
+    max-height: 9.5rem;
+    overflow-y: auto;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--mab-radius-sm);
+}
+
+.profile-list.is-invalid {
+    border-color: var(--bs-form-invalid-border-color);
+}
+
+/* Mode-dependent button label and time field, driven purely by CSS. */
+.mode-label {
+    display: none;
+}
+
+.schedule-panel:has(input[name="mode"][value="schedule"]:checked) .mode-label-schedule,
+.schedule-panel:has(input[name="mode"][value="queue"]:checked) .mode-label-queue,
+.schedule-panel:has(input[name="mode"][value="now"]:checked) .mode-label-now,
+.schedule-panel:not(:has(input[name="mode"]:checked)) .mode-label-schedule {
+    display: inline;
+}
+
+.schedule-panel:has(input[name="mode"][value="queue"]:checked) .schedule-time,
+.schedule-panel:has(input[name="mode"][value="now"]:checked) .schedule-time {
+    display: none;
+}
+
+.publish-summary {
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--mab-radius-sm);
+    background: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+}
+
+/* ------------------------------------------------------------ misc parts */
+.image-modal-img {
+    max-width: 100%;
+    max-height: 80vh;
+    object-fit: contain;
+}
+
+.toast-container {
+    z-index: 1090;
+}
+
+.toast {
+    --bs-toast-max-width: 380px;
+}
+
+.error-page {
+    max-width: 36rem;
+}
+
+.app-footer {
+    background: color-mix(in srgb, var(--mab-surface) 60%, transparent);
+    border-color: var(--mab-border) !important;
+}
+
+/* ------------------------------------------------------------ responsive */
+@media (max-width: 575.98px) {
+    .dropzone {
+        min-height: 9rem;
+        padding: 1.5rem 0.75rem;
+    }
+
+    .hero .display-6 {
+        font-size: 1.6rem;
+    }
+
+    .step {
+        font-size: 0.8rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

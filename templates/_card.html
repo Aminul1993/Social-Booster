@@ -1,0 +1,219 @@
+{#
+  One draft card. Rendered on page load, after upload, after AI generation and
+  after scheduling; HTMX swaps the whole column (#draft-<id>, outerHTML).
+  Context: card (app.views.CardView), publisher (app.accounts.PublisherStatus).
+#}
+{% from "partials/_icons.html" import icon %}
+{% set d = card.draft %}
+{% set did = d.id %}
+{% set errors = card.errors %}
+<div class="col-12 col-md-6 col-xxl-4 draft-col" id="draft-{{ did }}">
+<article class="card draft-card h-100 shadow-sm" data-status="{{ d.status.value }}" aria-labelledby="draft-title-{{ did }}">
+    <div class="draft-media">
+        <button type="button" class="draft-image-btn" data-bs-toggle="modal" data-bs-target="#image-modal"
+                data-image-src="{{ card.image_url }}" data-image-title="{{ d.original_filename }}"
+                aria-label="Enlarge {{ d.original_filename }}">
+            <img src="{{ card.image_url }}" class="draft-image" width="{{ d.width }}" height="{{ d.height }}"
+                 loading="lazy" decoding="async"
+                 alt="{{ d.original_filename }}{% if d.labels %}: {{ d.labels | map(attribute='name') | join(', ') }}{% endif %}">
+            <span class="draft-image-zoom" aria-hidden="true">{{ icon("maximize") }}</span>
+        </button>
+        <span class="badge draft-status text-bg-{{ d.status.badge }}">{{ d.status.label }}</span>
+    </div>
+
+    <div class="card-body d-flex flex-column gap-3">
+        <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="min-w-0">
+                <h3 class="h6 mb-0 text-truncate" id="draft-title-{{ did }}" title="{{ d.original_filename }}">{{ d.original_filename }}</h3>
+                <p class="small text-body-secondary mb-0">{{ d.width }}×{{ d.height }} · {{ d.size_bytes | filesize }}</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger btn-icon flex-shrink-0"
+                    hx-delete="/drafts/{{ did }}" hx-target="#draft-{{ did }}" hx-swap="outerHTML swap:150ms"
+                    hx-confirm="Delete this draft and its image?"
+                    aria-label="Delete draft {{ d.original_filename }}" title="Delete draft">
+                {{ icon("trash") }}
+            </button>
+        </div>
+
+        {% if d.labels %}
+        <div>
+            <p class="small fw-semibold mb-1">Detected in the image</p>
+            <ul class="label-list list-unstyled d-flex flex-wrap gap-1 mb-0">
+                {% for label in d.labels %}
+                <li class="label-badge" title="{{ label.percent }}% confidence">{{ label.name }} <span class="label-score">{{ label.percent }}%</span></li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% elif d.vision_error %}
+        <p class="small text-warning-emphasis d-flex gap-2 mb-0">{{ icon("alert", "icon flex-shrink-0 mt-1") }}<span>This image couldn't be analysed automatically. Type a few keywords below.</span></p>
+        {% endif %}
+
+        {% if card.notice %}
+        <div class="alert alert-{{ card.notice_level }} py-2 px-3 small mb-0 d-flex gap-2" role="status">
+            {{ icon("check-circle", "icon flex-shrink-0 mt-1") }}<span>{{ card.notice }}</span>
+        </div>
+        {% endif %}
+
+        <form class="draft-form d-flex flex-column flex-grow-1" novalidate>
+            <input type="hidden" name="draft_id" value="{{ did }}">
+            <fieldset class="d-flex flex-column gap-3 flex-grow-1 min-w-0">
+                <legend class="visually-hidden">Copy and scheduling for {{ d.original_filename }}</legend>
+
+                <div class="row g-2">
+                    <div class="col-12 col-sm-8">
+                        <label class="form-label small mb-1" for="keywords-{{ did }}">Keywords</label>
+                        <input type="text" class="form-control form-control-sm{% if errors.keywords %} is-invalid{% endif %}"
+                               id="keywords-{{ did }}" name="keywords" value="{{ card.keywords }}" maxlength="500"
+                               placeholder="e.g. sunset, beach, surfboard" autocomplete="off"
+                               aria-describedby="keywords-help-{{ did }}{% if errors.keywords %} keywords-error-{{ did }}{% endif %}">
+                        {% if errors.keywords %}<div class="invalid-feedback" id="keywords-error-{{ did }}">{{ errors.keywords }}</div>{% endif %}
+                        <div class="form-text" id="keywords-help-{{ did }}">Comma-separated. Edit them to steer the AI.</div>
+                    </div>
+                    <div class="col-12 col-sm-4">
+                        <label class="form-label small mb-1" for="tone-{{ did }}">Tone</label>
+                        <select class="form-select form-select-sm" id="tone-{{ did }}" name="tone">
+                            {% for tone in tones %}
+                            <option value="{{ tone.value }}"{% if tone.value == card.tone %} selected{% endif %}>{{ tone.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <button type="button"
+                        class="btn {{ 'btn-outline-primary' if d.has_copy else 'btn-primary' }} d-flex align-items-center justify-content-center gap-2"
+                        hx-post="/generate" hx-target="#draft-{{ did }}" hx-swap="outerHTML"
+                        hx-disabled-elt="closest fieldset"
+                        {% if d.has_copy %}hx-confirm="Replace the current caption and hashtags with new AI copy?"{% endif %}>
+                    <span class="spinner-border spinner-border-sm btn-spinner" aria-hidden="true"></span>
+                    {{ icon("sparkles", "icon btn-icon-idle") }}
+                    <span class="btn-label-idle">{{ "Regenerate copy" if d.has_copy else "Generate caption & hashtags" }}</span>
+                    <span class="btn-label-busy">Writing copy…</span>
+                </button>
+
+                {% if d.has_copy %}
+                <div class="copy-fields d-flex flex-column gap-3"
+                     hx-patch="/drafts/{{ did }}" hx-trigger="input delay:800ms"
+                     hx-target="#save-status-{{ did }}" hx-swap="innerHTML" hx-sync="this:replace">
+                    <div>
+                        <div class="d-flex justify-content-between align-items-baseline">
+                            <label class="form-label small mb-1" for="caption-{{ did }}">Caption</label>
+                            <span class="form-text small mt-0 js-char-count" data-for="caption-{{ did }}" data-max="2200" aria-live="polite"></span>
+                        </div>
+                        <textarea class="form-control{% if errors.caption %} is-invalid{% endif %}" id="caption-{{ did }}"
+                                  name="caption" rows="3" maxlength="2200"{% if card.focus == "caption" %} autofocus{% endif %}
+                                  {% if errors.caption %}aria-describedby="caption-error-{{ did }}"{% endif %}>{{ card.caption }}</textarea>
+                        {% if errors.caption %}<div class="invalid-feedback" id="caption-error-{{ did }}">{{ errors.caption }}</div>{% endif %}
+                    </div>
+                    <div>
+                        <div class="d-flex justify-content-between align-items-baseline">
+                            <label class="form-label small mb-1" for="hashtags-{{ did }}">Hashtags</label>
+                            <span class="form-text small mt-0 js-tag-count" data-for="hashtags-{{ did }}" data-max="30" aria-live="polite"></span>
+                        </div>
+                        <input type="text" class="form-control form-control-sm{% if errors.hashtags %} is-invalid{% endif %}"
+                               id="hashtags-{{ did }}" name="hashtags" value="{{ card.hashtags }}" maxlength="2000"
+                               placeholder="#summer #travel" autocomplete="off"
+                               aria-describedby="hashtags-help-{{ did }}{% if errors.hashtags %} hashtags-error-{{ did }}{% endif %}">
+                        {% if errors.hashtags %}<div class="invalid-feedback" id="hashtags-error-{{ did }}">{{ errors.hashtags }}</div>{% endif %}
+                        <div class="form-text" id="hashtags-help-{{ did }}">Separate with spaces; the # is added for you.</div>
+                    </div>
+                    <div class="save-status small text-body-secondary" id="save-status-{{ did }}" aria-live="polite">
+                        {% if d.ai_model %}Written by {{ d.ai_model }} · edits save automatically{% else %}Edits save automatically{% endif %}
+                    </div>
+                </div>
+
+                <section class="schedule-panel border-top pt-3 d-flex flex-column gap-3" aria-labelledby="schedule-title-{{ did }}">
+                    <h4 class="h6 d-flex align-items-center gap-2 mb-0" id="schedule-title-{{ did }}">
+                        {{ icon("calendar") }} Schedule on {{ publisher.display_name }}
+                    </h4>
+                    {% if not publisher.configured %}
+                        <p class="small text-body-secondary mb-0">Scheduling is unavailable: {{ publisher.display_name }} is not configured on this server.</p>
+                    {% elif not publisher.connected %}
+                        <div>
+                            <a href="/buffer/auth" class="btn btn-outline-primary w-100 d-flex align-items-center justify-content-center gap-2">
+                                {{ icon("link") }} Connect {{ publisher.display_name }} to schedule
+                            </a>
+                            <p class="form-text mb-0">Your drafts are saved, so nothing is lost while you connect.</p>
+                        </div>
+                    {% else %}
+                        <fieldset>
+                            <legend class="form-label small mb-1">Profiles</legend>
+                            {% if publisher.profiles %}
+                            <div class="profile-list{% if errors.profile_ids %} is-invalid{% endif %}">
+                                {% for profile in publisher.profiles %}
+                                <div class="form-check">
+                                    <input class="form-check-input{% if errors.profile_ids %} is-invalid{% endif %}" type="checkbox"
+                                           name="profile_ids" value="{{ profile.id }}" id="profile-{{ did }}-{{ loop.index }}"
+                                           {% if profile.id in card.selected_profiles or publisher.profiles | length == 1 %}checked{% endif %}>
+                                    <label class="form-check-label small" for="profile-{{ did }}-{{ loop.index }}">
+                                        {{ profile.username }} <span class="text-body-secondary">· {{ profile.service_label }}</span>
+                                    </label>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% if errors.profile_ids %}<div class="invalid-feedback d-block">{{ errors.profile_ids }}</div>{% endif %}
+                            {% else %}
+                            <p class="small text-body-secondary mb-0">{{ publisher.error or "No social profiles found in your Buffer account." }}
+                                <a href="/buffer/refresh">Refresh</a></p>
+                            {% endif %}
+                        </fieldset>
+
+                        <fieldset>
+                            <legend class="form-label small mb-1">When</legend>
+                            <div class="btn-group btn-group-sm w-100 mode-group" role="group" aria-label="Publishing mode">
+                                {% for mode in publish_modes %}
+                                <input type="radio" class="btn-check" name="mode" id="mode-{{ did }}-{{ mode.value }}"
+                                       value="{{ mode.value }}" autocomplete="off"{% if mode.value == card.mode %} checked{% endif %}>
+                                <label class="btn btn-outline-secondary" for="mode-{{ did }}-{{ mode.value }}">{{ mode.label }}</label>
+                                {% endfor %}
+                            </div>
+                            {% if errors.mode %}<div class="invalid-feedback d-block">{{ errors.mode }}</div>{% endif %}
+                        </fieldset>
+
+                        <div class="schedule-time">
+                            <label class="form-label small mb-1" for="when-{{ did }}">Date &amp; time <span class="text-body-secondary js-tz-label"></span></label>
+                            <input type="datetime-local" class="form-control form-control-sm js-schedule-input{% if errors.scheduled_for or errors.timezone %} is-invalid{% endif %}"
+                                   id="when-{{ did }}" name="scheduled_for" value="{{ card.scheduled_for }}">
+                            <input type="hidden" name="timezone" class="js-timezone" value="{{ card.timezone }}">
+                            {% if errors.scheduled_for %}<div class="invalid-feedback">{{ errors.scheduled_for }}</div>{% endif %}
+                            {% if errors.timezone %}<div class="invalid-feedback">{{ errors.timezone }}</div>{% endif %}
+                        </div>
+
+                        <button type="button" class="btn btn-success d-flex align-items-center justify-content-center gap-2"
+                                hx-post="/buffer/schedule" hx-target="#draft-{{ did }}" hx-swap="outerHTML"
+                                hx-disabled-elt="closest fieldset"
+                                {% if d.publish %}hx-confirm="This draft was already sent to {{ publisher.display_name }}. Send it again?"{% endif %}
+                                {% if not publisher.profiles %}disabled{% endif %}>
+                            <span class="spinner-border spinner-border-sm btn-spinner" aria-hidden="true"></span>
+                            {{ icon("send", "icon btn-icon-idle") }}
+                            <span class="btn-label-idle">
+                                <span class="mode-label mode-label-schedule">Schedule post</span>
+                                <span class="mode-label mode-label-queue">Add to queue</span>
+                                <span class="mode-label mode-label-now">Share now</span>
+                            </span>
+                            <span class="btn-label-busy">Sending to {{ publisher.display_name }}…</span>
+                        </button>
+                    {% endif %}
+                </section>
+                {% endif %}
+            </fieldset>
+        </form>
+
+        {% if d.publish %}
+        <div class="publish-summary small d-flex gap-2">
+            {{ icon("check-circle", "icon flex-shrink-0 mt-1 text-success") }}
+            <span>
+                Last sent <time datetime="{{ d.publish.published_at | iso }}" class="js-local-time">{{ d.publish.published_at | utc }}</time>:
+                {% if d.publish.mode.value == "schedule" and d.publish.scheduled_at %}
+                    scheduled for <time datetime="{{ d.publish.scheduled_at | iso }}" class="js-local-time">{{ d.publish.scheduled_at | utc }}</time>
+                {% elif d.publish.mode.value == "queue" %}
+                    added to the queue
+                {% else %}
+                    shared immediately
+                {% endif %}
+                on {{ d.publish.profile_names | join(", ") or (d.publish.profile_ids | length ~ " profile(s)") }}.
+            </span>
+        </div>
+        {% endif %}
+    </div>
+</article>
+</div>

@@ -1,0 +1,15 @@
+# Development, test and quality tooling.  pip install -r requirements-dev.txt
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+respx==0.23.1
+asgi-lifespan==2.1.0
+
+ruff==0.16.10
+black==26.10.0
+mypy==2.4.0
+types-aiofiles==25.1.0.20260518
+
+pre-commit==4.6.2

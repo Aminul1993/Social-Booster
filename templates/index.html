@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% from "partials/_icons.html" import icon %}
+
+{% block navbar %}
+<nav class="navbar app-navbar border-bottom sticky-top">
+    <div class="container-xl gap-2">
+        <a class="navbar-brand d-flex align-items-center gap-2 fw-semibold" href="/">
+            <span class="brand-mark" aria-hidden="true">{{ icon("sparkles") }}</span>
+            <span class="d-none d-sm-inline">{{ app_name }}</span>
+            <span class="d-sm-none">Post Builder</span>
+        </a>
+        <div class="d-flex align-items-center gap-2 ms-auto">
+            {% include "partials/_buffer_status.html" %}
+            <button type="button" class="btn btn-sm btn-outline-secondary theme-toggle" id="theme-toggle"
+                    aria-label="Toggle dark mode" title="Toggle dark mode">
+                <span class="theme-icon-light">{{ icon("moon") }}</span>
+                <span class="theme-icon-dark">{{ icon("sun") }}</span>
+            </button>
+        </div>
+    </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<header class="hero mb-4 mb-lg-5">
+    <h1 class="display-6 fw-bold mb-2">Turn photos into ready-to-post social content</h1>
+    <p class="lead text-body-secondary mb-4">
+        Upload images, let AI spot what's in them and write a caption with hashtags,
+        polish the copy, then schedule it on Buffer.
+    </p>
+    <ol class="steps list-unstyled d-flex flex-wrap gap-2 gap-md-3 mb-0" aria-label="How it works">
+        <li class="step"><span class="step-number">1</span> Upload images</li>
+        <li class="step"><span class="step-number">2</span> Generate &amp; edit copy</li>
+        <li class="step"><span class="step-number">3</span> Schedule on Buffer</li>
+    </ol>
+</header>
+
+{% if not ollama_configured %}
+<div class="alert alert-warning d-flex gap-2 align-items-start" role="alert">
+    {{ icon("alert", "icon flex-shrink-0 mt-1") }}
+    <div><strong>AI copywriting is not configured.</strong> Set <code>OLLAMA_API_KEY</code> to enable caption generation.</div>
+</div>
+{% endif %}
+{% if vision.status == "error" %}
+<div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
+    {{ icon("alert", "icon flex-shrink-0 mt-1") }}
+    <div><strong>Image tagging is unavailable.</strong> You can still type keywords for each image yourself.</div>
+</div>
+{% elif vision.status == "disabled" %}
+<div class="alert alert-info d-flex gap-2 align-items-start" role="note">
+    {{ icon("alert", "icon flex-shrink-0 mt-1") }}
+    <div>Automatic image tagging is turned off. Type a few keywords for each image before generating copy.</div>
+</div>
+{% endif %}
+
+<section class="card upload-card shadow-sm mb-4 mb-lg-5" aria-labelledby="upload-heading">
+    <div class="card-body p-3 p-md-4">
+        <h2 id="upload-heading" class="h5 d-flex align-items-center gap-2 mb-3">
+            <span class="step-number">1</span> Upload your images
+        </h2>
+        <form id="upload-form"
+              hx-post="/upload"
+              hx-encoding="multipart/form-data"
+              hx-trigger="change from:#file-input"
+              hx-target="#drafts"
+              hx-swap="afterbegin show:#drafts-heading:top"
+              hx-indicator="#upload-progress"
+              hx-disabled-elt="#file-input"
+              data-max-files="{{ limits.max_files }}"
+              data-max-bytes="{{ limits.max_bytes }}"
+              data-accept="image/jpeg,image/png,image/webp">
+            <label for="file-input" class="dropzone" id="dropzone">
+                <input id="file-input" class="visually-hidden" type="file" name="files" multiple
+                       accept="image/jpeg,image/png,image/webp" aria-describedby="upload-help">
+                <span class="dropzone-icon" aria-hidden="true">{{ icon("upload", "icon icon-lg") }}</span>
+                <span class="dropzone-title">Drop images here or <span class="link-primary text-decoration-underline">browse</span></span>
+                <span class="dropzone-hint" id="upload-help">
+                    JPEG, PNG or WebP · up to {{ "%g" | format(limits.max_mb) }} MB each · {{ limits.max_files }} files at a time
+                </span>
+            </label>
+            <div id="upload-previews" class="upload-previews" aria-live="polite"></div>
+            <div id="upload-progress" class="upload-progress htmx-indicator" role="status">
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>Uploading and analysing images…</span>
+                    <span class="upload-progress-value">0%</span>
+                </div>
+                <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated"></div>
+                </div>
+            </div>
+        </form>
+    </div>
+</section>
+
+<section class="drafts-section" aria-labelledby="drafts-heading">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <h2 id="drafts-heading" class="h5 d-flex align-items-center gap-2 mb-0">
+            <span class="step-number">2</span> Generate, edit &amp; schedule
+        </h2>
+        <span class="small text-body-secondary">Drafts are kept on this server for your session.</span>
+    </div>
+    <div id="drafts" class="row g-3 g-lg-4">
+        {% for card in cards %}
+            {% include "_card.html" %}
+        {% endfor %}
+    </div>
+    <div class="empty-state text-center text-body-secondary py-5">
+        {{ icon("image", "icon icon-xl mb-2") }}
+        <p class="mb-1 fw-semibold">No drafts yet</p>
+        <p class="small mb-0">Upload a few photos above to get started.</p>
+    </div>
+</section>
+
+<script type="application/json" id="flash-data">{{ flashes | tojson }}</script>
+{% endblock %}
+
+{% block modals %}
+<div class="modal fade" id="image-modal" tabindex="-1" aria-labelledby="image-modal-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title h6 text-truncate" id="image-modal-title">Preview</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0 bg-body-tertiary text-center">
+                <img src="" alt="" class="image-modal-img" id="image-modal-img">
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Turn photos into scheduled social-media posts: AI image tagging, AI copywriting and Buffer scheduling.">
+    <meta name="color-scheme" content="light dark">
+    <meta name="htmx-config" content='{{ htmx_config | tojson }}'>
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link rel="icon" href="{{ static_url('img/favicon.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ static_url('vendor/bootstrap/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/style.css') }}">
+    {# Sets the colour theme before first paint (no flash of the wrong theme). #}
+    <script src="{{ static_url('js/theme.js') }}"></script>
+    <script src="{{ static_url('vendor/htmx/htmx.min.js') }}" defer></script>
+    <script src="{{ static_url('vendor/bootstrap/bootstrap.bundle.min.js') }}" defer></script>
+    <script src="{{ static_url('js/app.js') }}" defer></script>
+</head>
+<body hx-headers='{{ {"X-CSRF-Token": csrf_token} | tojson }}'>
+<a class="visually-hidden-focusable skip-link" href="#main">Skip to content</a>
+
+{% block navbar %}{% endblock %}
+
+<main id="main" class="container-xl py-4 py-lg-5">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="app-footer border-top">
+    <div class="container-xl py-3 d-flex flex-column flex-sm-row gap-2 justify-content-between small text-body-secondary">
+        <span>{{ app_name }} · v{{ app_version }}</span>
+        <span>Images are tagged on this server · Copy by Ollama Cloud · Scheduling by Buffer</span>
+    </div>
+</footer>
+
+{# Toasts are created by app.js from HX-Trigger events and flash messages. #}
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container" aria-live="polite" aria-atomic="false"></div>
+{% block modals %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "partials/_icons.html" import icon %}
+
+{% block title %}{{ status_code }} {{ title }} · {{ app_name }}{% endblock %}
+
+{% block navbar %}
+<nav class="navbar app-navbar border-bottom">
+    <div class="container-xl">
+        <a class="navbar-brand d-flex align-items-center gap-2 fw-semibold" href="/">
+            <span class="brand-mark" aria-hidden="true">{{ icon("sparkles") }}</span>{{ app_name }}
+        </a>
+    </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="error-page text-center mx-auto py-5">
+    <p class="display-4 fw-bold text-body-tertiary mb-2">{{ status_code }}</p>
+    <h1 class="h3 mb-3">{{ title }}</h1>
+    <p class="text-body-secondary mb-4">{{ message }}</p>
+    <a href="/" class="btn btn-primary">Back to the post builder</a>
+    {% if request_id %}<p class="small text-body-tertiary mt-4 mb-0">Reference: <code>{{ request_id }}</code></p>{% endif %}
+</div>
+<script type="application/json" id="flash-data">[]</script>
+{% endblock %}

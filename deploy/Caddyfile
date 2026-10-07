@@ -1,0 +1,19 @@
+# Reverse proxy with automatic HTTPS (Let's Encrypt) in front of the app.
+# Set DOMAIN to your public host name; PUBLIC_BASE_URL and BUFFER_REDIRECT_URI
+# in .env must use the same https://DOMAIN origin.
+{$DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 110MB
+	}
+
+	reverse_proxy app:8000 {
+		header_up X-Request-ID {http.request.uuid}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

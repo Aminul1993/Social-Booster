@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "Social-Booster/**"
+      - ".github/workflows/ci.yml"
+      - ".pre-commit-config.yaml"
+  pull_request:
+    paths:
+      - "Social-Booster/**"
+      - ".github/workflows/ci.yml"
+      - ".pre-commit-config.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: Social-Booster
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality:
+    name: Lint, format & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: Social-Booster/requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Ruff (lint)
+        run: ruff check --output-format=github .
+      - name: Black (format)
+        run: black --check --diff .
+      - name: Mypy (strict)
+        run: mypy app services tests scripts gunicorn.conf.py
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: Social-Booster/requirements*.txt
+      - name: Install dependencies (CPU-only PyTorch)
+        run: pip install -r requirements-dev.txt
+      - name: Pytest with coverage gate (>= 90%)
+        run: pytest --cov-report=xml --junitxml=junit.xml
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-${{ matrix.python-version }}
+          path: |
+            Social-Booster/coverage.xml
+            Social-Booster/junit.xml
+
+  docker:
+    name: Docker image build & smoke test
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: Social-Booster
+          load: true
+          push: false
+          tags: marketing-ai-builder:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run container
+        run: |
+          docker run -d --name mab -p 8000:8000 \
+            -e SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+            -e COOKIE_SECURE=false \
+            --read-only --tmpfs /tmp \
+            marketing-ai-builder:ci
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health; then echo; break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/health/ready | tee ready.json
+          python -c "import json; d=json.load(open('ready.json')); assert d['checks']['vision']['status'] in ('ok','loading'), d"
+          curl -fsS http://127.0.0.1:8000/ | grep -q "Upload your images"
+      - name: Container logs
+        if: always()
+        run: docker logs mab
