@@ -1,21 +1,25 @@
-"""Buffer OAuth workflow: connect -> consent -> callback (state check) -> token -> profiles."""
+"""Buffer OAuth workflow: connect -> consent -> callback (state, PKCE) -> token -> channels."""
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 import respx
 
+from services.buffer import pkce_challenge
+from services.publishing import OAuthToken
 from tests.conftest import AppFactory
 from tests.helpers import (
+    BUFFER_API_URL,
     BUFFER_OAUTH_URL,
-    BUFFER_PROFILES_URL,
     BUFFER_TOKEN_URL,
-    PROFILES_PAYLOAD,
+    CHANNELS_PAYLOAD,
     AppClient,
+    FakeBufferAPI,
     form_body,
     make_client,
     query_params,
@@ -34,7 +38,8 @@ def flashes(html: str) -> list[dict[str, str]]:
 
 async def test_full_connect_flow(client: AppClient, mock_http: respx.MockRouter) -> None:
     token_route = mock_http.post(BUFFER_TOKEN_URL).respond(json={"access_token": "1/buffer-token"})
-    profiles_route = mock_http.get(BUFFER_PROFILES_URL).respond(json=PROFILES_PAYLOAD)
+    api = FakeBufferAPI()
+    mock_http.post(BUFFER_API_URL).mock(side_effect=api)
 
     start = await client.get("/buffer/auth")
     assert start.status_code == 303
@@ -44,6 +49,8 @@ async def test_full_connect_flow(client: AppClient, mock_http: respx.MockRouter)
     assert params["client_id"] == "client-id"
     assert params["redirect_uri"] == "http://testserver/buffer/callback"
     assert params["response_type"] == "code"
+    assert params["scope"] == "account:read posts:write offline_access"
+    assert params["code_challenge_method"] == "S256"
     assert len(params["state"]) >= 32
 
     callback = await client.get(
@@ -51,7 +58,13 @@ async def test_full_connect_flow(client: AppClient, mock_http: respx.MockRouter)
     )
     assert callback.status_code == 303
     assert callback.headers["location"] == "/"
-    assert form_body(token_route.calls.last.request)["code"] == ["one-time-code"]
+    sent = form_body(token_route.calls.last.request)
+    assert sent["code"] == ["one-time-code"]
+    # PKCE: the verifier proves this server started the flow; the browser never saw it.
+    verifier = sent["code_verifier"][0]
+    assert pkce_challenge(verifier) == params["code_challenge"]
+    assert verifier not in location
+    assert verifier not in (client.http.cookies.get("mab_session") or "")
 
     page = (await client.get("/")).text
     assert "Buffer connected" in page
@@ -61,7 +74,7 @@ async def test_full_connect_flow(client: AppClient, mock_http: respx.MockRouter)
     assert flashes(page) == [
         {"level": "success", "message": "Buffer connected. You can now schedule posts."}
     ]
-    assert profiles_route.calls.last.request.headers["Authorization"] == "Bearer 1/buffer-token"
+    assert api.requests[-1].headers["Authorization"] == "Bearer 1/buffer-token"
 
     # The token is stored encrypted server-side and never sent to the browser.
     assert "1/buffer-token" not in page
@@ -98,7 +111,7 @@ async def test_callback_without_prior_auth(client: AppClient, mock_http: respx.M
 
 async def test_state_cannot_be_replayed(client: AppClient, mock_http: respx.MockRouter) -> None:
     token_route = mock_http.post(BUFFER_TOKEN_URL).respond(json={"access_token": "x"})
-    mock_http.get(BUFFER_PROFILES_URL).respond(json=[])
+    mock_http.post(BUFFER_API_URL).mock(side_effect=FakeBufferAPI(channels=[]))
     start = await client.get("/buffer/auth")
     state = query_params(start.headers["location"])["state"]
     await client.get("/buffer/callback", params={"code": "c", "state": state})
@@ -139,6 +152,48 @@ async def test_code_exchange_failure(client: AppClient, mock_http: respx.MockRou
     assert "Connect Buffer" in page
 
 
+async def test_invalid_client_points_at_configuration(
+    client: AppClient, mock_http: respx.MockRouter
+) -> None:
+    mock_http.post(BUFFER_TOKEN_URL).respond(401, json={"error": "invalid_client"})
+    await client.connect_buffer()
+    message = flashes((await client.get("/")).text)[0]["message"]
+    assert "invalid_client" in message
+    assert "BUFFER_CLIENT_ID" in message
+
+
+async def test_error_code_shown_without_description(client: AppClient) -> None:
+    start = await client.get("/buffer/auth")
+    state = query_params(start.headers["location"])["state"]
+    await client.get("/buffer/callback", params={"error": "invalid_scope", "state": state})
+    message = flashes((await client.get("/")).text)[0]["message"]
+    assert message == "Buffer authorization was not completed: invalid_scope"
+
+
+async def test_expired_token_is_refreshed_transparently(
+    client: AppClient, mock_http: respx.MockRouter
+) -> None:
+    token_route = mock_http.post(BUFFER_TOKEN_URL).respond(
+        json={"access_token": "2/renewed", "expires_in": 3600, "refresh_token": "r2"}
+    )
+    api = FakeBufferAPI()
+    mock_http.post(BUFFER_API_URL).mock(side_effect=api)
+    stale = OAuthToken(
+        access_token="1/stale",
+        refresh_token="r1",
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    await client.container.tokens.save(client.session_id, "buffer", stale)
+
+    page = (await client.get("/")).text
+    assert "2 profiles" in page
+    assert form_body(token_route.calls.last.request)["refresh_token"] == ["r1"]
+    assert api.requests[-1].headers["Authorization"] == "Bearer 2/renewed"
+    stored = await client.container.tokens.get(client.session_id, "buffer")
+    assert stored is not None
+    assert (stored.access_token, stored.refresh_token) == ("2/renewed", "r2")
+
+
 async def test_not_configured(app_factory: AppFactory) -> None:
     async with make_client(app_factory(buffer_client_secret=None)) as client:
         response = await client.get("/buffer/auth")
@@ -151,7 +206,7 @@ async def test_not_configured(app_factory: AppFactory) -> None:
 
 async def test_disconnect(client: AppClient, mock_http: respx.MockRouter) -> None:
     mock_http.post(BUFFER_TOKEN_URL).respond(json={"access_token": "t"})
-    mock_http.get(BUFFER_PROFILES_URL).respond(json=PROFILES_PAYLOAD)
+    mock_http.post(BUFFER_API_URL).mock(side_effect=FakeBufferAPI())
     await client.connect_buffer()
     response = await client.post("/buffer/disconnect")
     assert response.status_code == 200
@@ -163,20 +218,22 @@ async def test_disconnect(client: AppClient, mock_http: respx.MockRouter) -> Non
 
 async def test_refresh_profiles(client: AppClient, mock_http: respx.MockRouter) -> None:
     mock_http.post(BUFFER_TOKEN_URL).respond(json={"access_token": "t"})
-    profiles = mock_http.get(BUFFER_PROFILES_URL).mock(
-        side_effect=[
-            httpx.Response(200, json=PROFILES_PAYLOAD),
-            httpx.Response(200, json=PROFILES_PAYLOAD[:1]),
-            httpx.Response(500),
-        ]
-    )
+    api = FakeBufferAPI()
+    route = mock_http.post(BUFFER_API_URL).mock(side_effect=api)
     await client.connect_buffer()
     await client.get("/")  # cached after this
+    calls = route.call_count
+    await client.get("/")
+    assert route.call_count == calls
+
+    api.channels = CHANNELS_PAYLOAD[:1]
     refreshed = await client.get("/buffer/refresh")
     assert refreshed.status_code == 303
     page = (await client.get("/")).text
     assert "Found 1 Buffer profile(s)." in [f["message"] for f in flashes(page)]
-    assert profiles.call_count == 2
+    assert route.call_count == calls + 2  # organizations + channels
+
+    route.side_effect = lambda request: httpx.Response(500)
 
     await client.get("/buffer/refresh")
     page = (await client.get("/")).text
@@ -187,7 +244,7 @@ async def test_revoked_token_shows_connect_again(
     client: AppClient, mock_http: respx.MockRouter
 ) -> None:
     mock_http.post(BUFFER_TOKEN_URL).respond(json={"access_token": "t"})
-    mock_http.get(BUFFER_PROFILES_URL).respond(401)
+    mock_http.post(BUFFER_API_URL).respond(401)
     await client.connect_buffer()
     page = (await client.get("/")).text
     assert "Connect Buffer" in page

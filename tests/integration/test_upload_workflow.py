@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import io
 import re
+import threading
+from typing import Any
 
 import pytest
 from PIL import Image
 
+from services.images import ImageProcessor, ProcessedImage
+from services.vision import VisionLabel
 from tests.conftest import AppFactory
-from tests.helpers import AppClient, FailingClassifier, make_client, make_image, toast
+from tests.helpers import (
+    AppClient,
+    FailingClassifier,
+    FakeClassifier,
+    make_client,
+    make_image,
+    toast,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("mock_http")]
 
@@ -131,6 +142,59 @@ async def test_vision_failure_degrades_gracefully(app_factory: AppFactory) -> No
         assert 'name="keywords" value=""' in response.text
         metrics = (await client.get("/metrics")).text
         assert "mab_vision_failures_total 1.0" in metrics
+
+
+async def test_images_are_decoded_one_at_a_time(
+    client: AppClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch must not hold every decoded image in memory at once."""
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    original = ImageProcessor.process
+
+    def tracking(self: ImageProcessor, *args: Any, **kwargs: Any) -> ProcessedImage:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            threading.Event().wait(0.02)
+            return original(self, *args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(ImageProcessor, "process", tracking)
+    response = await client.upload(*[(f"{i}.png", make_image(), "image/png") for i in range(4)])
+    assert response.status_code == 200
+    assert len(DRAFT_ID_RE.findall(response.text)) == 4
+    assert peak == 1
+
+
+async def test_vision_gets_a_downscaled_preview(app_factory: AppFactory) -> None:
+    seen: list[tuple[int, int]] = []
+
+    class Recording(FakeClassifier):
+        def predict(self, image: Image.Image, top_k: int) -> list[VisionLabel]:
+            seen.append(image.size)
+            return super().predict(image, top_k)
+
+    async with make_client(app_factory(classifier=Recording)) as client:
+        photo = make_image("JPEG", size=(1600, 1200))
+        response = await client.upload(("photo.jpg", photo, "image/jpeg"))
+        assert response.status_code == 200
+        assert "golden retriever" in response.text
+    assert seen == [(683, 512)]
+
+
+async def test_large_images_are_downscaled(client: AppClient) -> None:
+    wide = make_image("JPEG", size=(4096, 1024))
+    response = await client.upload(("wide.jpg", wide, "image/jpeg"))
+    assert response.status_code == 200
+    stored = next(client.container.settings.upload_dir.iterdir())
+    with Image.open(stored) as image:
+        assert image.size == (2048, 512)  # IMAGE_MAX_DIMENSION default
 
 
 async def test_vision_disabled(app_factory: AppFactory) -> None:

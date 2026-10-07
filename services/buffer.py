@@ -1,33 +1,41 @@
-"""Buffer integration: OAuth 2 authorization-code flow, profiles and posting.
+"""Buffer integration: OAuth 2 (authorization code + PKCE), channels and posting.
 
 Implements :class:`services.publishing.SocialPublisher` against Buffer's
-publish API (v1):
+current API (https://developers.buffer.com):
 
-* ``GET  {oauth_url}``     consent screen (``client_id``, ``redirect_uri``,
-  ``response_type=code``, ``state``)
-* ``POST {token_url}``     code -> access token (form-encoded)
-* ``GET  {profiles_url}``  connected social profiles
-* ``POST {post_url}``      create/schedule an update (form-encoded,
-  ``profile_ids[]``, ``text``, ``media[photo]``, ``scheduled_at``...)
+* ``GET  {oauth_url}``  consent screen (``client_id``, ``redirect_uri``,
+  ``response_type=code``, ``scope``, ``state``, S256 ``code_challenge``)
+* ``POST {token_url}``  code -> access + refresh token, and refresh
+  (form-encoded). Access tokens live about an hour; refresh tokens are
+  single-use and rotate on every refresh.
+* ``POST {api_url}``    GraphQL: ``account.organizations`` -> ``channels`` (the
+  social profiles) and ``createPost`` (one call per channel).
+
+Clients registered under Buffer's *Settings -> API* only exist on this API:
+the retired v1 endpoints (``bufferapp.com/oauth2``, ``api.bufferapp.com/1``)
+answer them with ``invalid_client``.
 
 The access token is sent as an ``Authorization: Bearer`` header, never in a
 URL, so it cannot leak into proxy or access logs. Every endpoint URL is
 configurable.
 
-Retries: profile listing (idempotent GET) is retried on timeouts/5xx/429.
-Token exchange is never retried (authorization codes are single-use) and
-posting is only retried when the connection failed *before* the request was
-sent, so a retry can never create a duplicate post.
+Retries: read queries are retried on timeouts/5xx/429. Token requests are
+never retried (codes and refresh tokens are single-use) and posts are only
+retried when the connection failed *before* the request was sent, so a retry
+can never create a duplicate post.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -54,10 +62,40 @@ from services.retry import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OAUTH_URL = "https://bufferapp.com/oauth2/authorize"
-DEFAULT_TOKEN_URL = "https://api.bufferapp.com/1/oauth2/token.json"  # noqa: S105 - a URL
-DEFAULT_PROFILES_URL = "https://api.bufferapp.com/1/profiles.json"
-DEFAULT_POST_URL = "https://api.bufferapp.com/1/updates/create.json"
+DEFAULT_OAUTH_URL = "https://auth.buffer.com/auth"
+DEFAULT_TOKEN_URL = "https://auth.buffer.com/token"  # noqa: S105 - a URL
+DEFAULT_API_URL = "https://api.buffer.com"
+#: Read organizations/channels, create posts, and get a refresh token.
+DEFAULT_SCOPE = "account:read posts:write offline_access"
+
+_EXPIRED_MESSAGE = "Your Buffer authorization expired. Please connect again."
+_INVALID_CLIENT_MESSAGE = (
+    "Buffer rejected this app's credentials (invalid_client). Check BUFFER_CLIENT_ID and "
+    "BUFFER_CLIENT_SECRET, and that BUFFER_OAUTH_URL/BUFFER_TOKEN_URL point at auth.buffer.com."
+)
+_SHARE_MODES = {
+    PublishMode.SCHEDULE: "customScheduled",
+    PublishMode.QUEUE: "addToQueue",
+    PublishMode.NOW: "shareNow",
+}
+
+_ORGANIZATIONS_QUERY = "query Organizations { account { organizations { id } } }"
+_CHANNELS_QUERY = """
+query Channels($organizationId: OrganizationId!) {
+  channels(input: { organizationId: $organizationId }) {
+    id name displayName service avatar isDisconnected isLocked
+  }
+}
+"""
+_CREATE_POST_MUTATION = """
+mutation CreatePost($input: CreatePostInput!) {
+  createPost(input: $input) {
+    __typename
+    ... on PostActionSuccess { post { id } }
+    ... on MutationError { message }
+  }
+}
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,18 +107,29 @@ class BufferConfig:
     redirect_uri: str
     oauth_url: str = DEFAULT_OAUTH_URL
     token_url: str = DEFAULT_TOKEN_URL
-    profiles_url: str = DEFAULT_PROFILES_URL
-    post_url: str = DEFAULT_POST_URL
-    scope: str | None = None
+    api_url: str = DEFAULT_API_URL
+    scope: str | None = DEFAULT_SCOPE
     timeout_seconds: float = 20.0
     retry: RetryPolicy = field(default_factory=RetryPolicy)
 
 
 def format_buffer_datetime(value: datetime) -> str:
-    """ISO-8601 UTC timestamp, the format Buffer's ``scheduled_at`` accepts."""
+    """ISO-8601 UTC timestamp, the format Buffer's ``dueAt`` accepts."""
     if value.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def pkce_challenge(code_verifier: str) -> str:
+    """S256 ``code_challenge`` for a PKCE ``code_verifier`` (RFC 7636)."""
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def is_legacy_url(url: str) -> bool:
+    """Whether ``url`` points at Buffer's retired v1 API (``bufferapp.com``)."""
+    host = (urlparse(url).hostname or "").lower()
+    return host == "bufferapp.com" or host.endswith(".bufferapp.com")
 
 
 class BufferClient:
@@ -120,7 +169,7 @@ class BufferClient:
         )
 
     # ------------------------------------------------------------------ OAuth
-    def authorization_url(self, state: str) -> str:
+    def authorization_url(self, state: str, *, code_verifier: str) -> str:
         """Consent-screen URL; ``state`` must be validated on the callback."""
         self._require_configured()
         if not state:
@@ -130,31 +179,63 @@ class BufferClient:
             "redirect_uri": self.config.redirect_uri,
             "response_type": "code",
             "state": state,
+            "code_challenge": pkce_challenge(code_verifier),
+            "code_challenge_method": "S256",
         }
         if self.config.scope:
             params["scope"] = self.config.scope
+            if "offline_access" in self.config.scope.split():
+                # OIDC Core 11: offline access (a refresh token) requires prompt=consent.
+                params["prompt"] = "consent"
         separator = "&" if "?" in self.config.oauth_url else "?"
         return f"{self.config.oauth_url}{separator}{urlencode(params)}"
 
-    async def exchange_code(self, code: str) -> OAuthToken:
-        """Trade the one-time authorization ``code`` for an access token."""
+    async def exchange_code(self, code: str, *, code_verifier: str) -> OAuthToken:
+        """Trade the one-time authorization ``code`` for a token pair."""
         self._require_configured()
         if not code:
             raise PublisherAuthError("Buffer did not return an authorization code.")
+        return await self._token_request(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": self.config.redirect_uri,
+                "code_verifier": code_verifier,
+            },
+            rejected="Buffer rejected the authorization code. Please connect again.",
+            action="exchange the authorization code",
+        )
+
+    async def refresh(self, token: OAuthToken) -> OAuthToken:
+        """Trade the single-use refresh token for a new token pair."""
+        self._require_configured()
+        if not token.refresh_token:
+            raise PublisherAuthError(_EXPIRED_MESSAGE)
+        refreshed = await self._token_request(
+            {"grant_type": "refresh_token", "refresh_token": token.refresh_token},
+            rejected=_EXPIRED_MESSAGE,
+            action="renew the authorization",
+        )
+        if refreshed.refresh_token is None:  # not rotated: the old one stays valid
+            return replace(refreshed, refresh_token=token.refresh_token)
+        return refreshed
+
+    async def _token_request(
+        self, grant: dict[str, str], *, rejected: str, action: str
+    ) -> OAuthToken:
         data = {
             "client_id": self.config.client_id or "",
             "client_secret": self.config.client_secret or "",
-            "redirect_uri": self.config.redirect_uri,
-            "code": code,
-            "grant_type": "authorization_code",
+            **grant,
         }
         response = await self._request("POST", self.config.token_url, data=data, auth=None)
         if response.status_code in (400, 401, 403):
+            invalid_client = self._error_field(response, "error") == "invalid_client"
             raise PublisherAuthError(
-                "Buffer rejected the authorization code. Please connect again.",
+                _INVALID_CLIENT_MESSAGE if invalid_client else rejected,
                 status_code=response.status_code,
             )
-        payload = self._json_or_error(response, action="exchange the authorization code")
+        payload = self._json_or_error(response, action=action)
         access_token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(access_token, str) or not access_token:
             raise PublisherAuthError("Buffer did not return an access token.")
@@ -172,49 +253,63 @@ class BufferClient:
 
     # --------------------------------------------------------------- profiles
     async def list_profiles(self, token: OAuthToken) -> list[PublishingProfile]:
-        """Social profiles connected to the Buffer account."""
+        """Channels (social profiles) of every organization the user belongs to."""
         self._check_token(token)
+        data = await self._query(token, _ORGANIZATIONS_QUERY, action="load your account")
+        account = data.get("account")
+        organizations = account.get("organizations") if isinstance(account, dict) else None
+        if not isinstance(organizations, list):
+            raise PublisherAPIError("Unexpected account data from Buffer.")
+        profiles: list[PublishingProfile] = []
+        for organization in organizations:
+            if not isinstance(organization, dict) or not organization.get("id"):
+                continue
+            data = await self._query(
+                token,
+                _CHANNELS_QUERY,
+                {"organizationId": organization["id"]},
+                action="load channels",
+            )
+            profiles.extend(self._parse_channels(data.get("channels")))
+        return profiles
 
-        async def attempt() -> list[PublishingProfile]:
-            response = await self._request("GET", self.config.profiles_url, auth=token)
-            self._raise_for_retryable(response)
-            return self._parse_profiles(self._json_or_error(response, action="load profiles"))
-
+    async def _query(
+        self,
+        token: OAuthToken,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Run a read-only GraphQL query, retrying transient failures."""
         return await retry_async(
-            attempt,
+            lambda: self._graphql(token, query, variables, action=action),
             policy=self.config.retry,
             is_retryable=lambda exc: isinstance(exc, PublisherError) and exc.retryable,
             sleep=self._sleep,
-            description="Buffer profile listing",
+            description=f"Buffer query ({action})",
         )
 
     @staticmethod
-    def _parse_profiles(payload: Any) -> list[PublishingProfile]:
-        items = payload.get("profiles", []) if isinstance(payload, dict) else payload
+    def _parse_channels(items: Any) -> list[PublishingProfile]:
         if not isinstance(items, list):
-            raise PublisherAPIError("Unexpected profile list from Buffer.")
+            raise PublisherAPIError("Unexpected channel list from Buffer.")
         profiles: list[PublishingProfile] = []
         for item in items:
-            if not isinstance(item, dict) or item.get("disabled"):
+            # Disconnected channels need re-auth in Buffer; locked ones exceed the plan.
+            if not isinstance(item, dict) or item.get("isDisconnected") or item.get("isLocked"):
                 continue
-            profile_id = item.get("id") or item.get("_id")
-            if not profile_id:
+            channel_id = item.get("id")
+            if not channel_id:
                 continue
-            username = (
-                item.get("formatted_username")
-                or item.get("service_username")
-                or item.get("username")
-                or item.get("formatted_service")
-                or str(profile_id)
-            )
-            avatar = item.get("avatar_https") or item.get("avatar")
+            avatar = item.get("avatar")
             profiles.append(
                 PublishingProfile(
-                    id=str(profile_id),
+                    id=str(channel_id),
                     service=str(item.get("service") or "unknown"),
-                    username=str(username),
+                    username=str(item.get("displayName") or item.get("name") or channel_id),
                     avatar_url=(
-                        str(avatar)
+                        avatar
                         if isinstance(avatar, str) and avatar.startswith("https://")
                         else None
                     ),
@@ -224,57 +319,128 @@ class BufferClient:
 
     # ---------------------------------------------------------------- posting
     async def publish(self, token: OAuthToken, post: PostRequest) -> PublishResult:
-        """Create a Buffer update (scheduled, queued or immediate)."""
-        self._check_token(token)
-        form: list[tuple[str, str]] = [("profile_ids[]", pid) for pid in post.profile_ids]
-        form.append(("text", post.text))
-        if post.media_url:
-            # For image updates Buffer requires both photo and thumbnail.
-            form.append(("media[photo]", post.media_url))
-            form.append(("media[thumbnail]", post.media_url))
-        if post.mode is PublishMode.SCHEDULE and post.scheduled_at is not None:
-            form.append(("scheduled_at", format_buffer_datetime(post.scheduled_at)))
-        elif post.mode is PublishMode.NOW:
-            form.append(("now", "true"))
+        """Create one Buffer post per channel (scheduled, queued or immediate).
 
-        async def attempt() -> httpx.Response:
-            return await self._request("POST", self.config.post_url, data=form, auth=token)
+        Channels are independent: a refusal for one is reported in
+        :attr:`PublishResult.failures` while the others still go out. Only when
+        every channel fails is the first error raised.
+        """
+        self._check_token(token)
+        post_ids: list[str] = []
+        failures: list[tuple[str, str]] = []
+        first_error: PublisherError | None = None
+        for channel_id in post.profile_ids:
+            try:
+                post_ids.append(await self._create_post(token, channel_id, post))
+            except PublisherAuthError:
+                raise
+            except PublisherError as exc:
+                first_error = first_error or exc
+                failures.append((channel_id, exc.message))
+        if first_error is not None and not post_ids:
+            raise first_error
+        logger.info(
+            "Buffer posts created",
+            extra={
+                "channels": len(post.profile_ids),
+                "mode": post.mode.value,
+                "posts": len(post_ids),
+            },
+        )
+        return PublishResult(update_ids=tuple(post_ids), failures=tuple(failures))
+
+    async def _create_post(self, token: OAuthToken, channel_id: str, post: PostRequest) -> str:
+        values: dict[str, Any] = {
+            "channelId": channel_id,
+            "text": post.text,
+            "schedulingType": "automatic",
+            "mode": _SHARE_MODES[post.mode],
+        }
+        if post.mode is PublishMode.SCHEDULE and post.scheduled_at is not None:
+            values["dueAt"] = format_buffer_datetime(post.scheduled_at)
+        if post.media_url:
+            values["assets"] = [{"image": {"url": post.media_url}}]
 
         # Only connection failures (request never sent) are retried.
-        response = await retry_async(
-            attempt,
+        data = await retry_async(
+            lambda: self._graphql(
+                token, _CREATE_POST_MUTATION, {"input": values}, action="create the post"
+            ),
             policy=self.config.retry,
             is_retryable=lambda exc: isinstance(exc, PublisherError)
             and isinstance(exc.__cause__, httpx.ConnectError | httpx.ConnectTimeout),
             sleep=self._sleep,
-            description="Buffer update creation",
+            description="Buffer post creation",
         )
-        payload = self._json_or_error(response, action="create the post")
-        if not isinstance(payload, dict) or payload.get("success") is False:
-            message = payload.get("message") if isinstance(payload, dict) else None
-            raise PublisherAPIError(f"Buffer refused the post: {message or 'unknown error'}.")
-        updates = payload.get("updates") or ([payload["update"]] if payload.get("update") else [])
-        update_ids = tuple(
-            str(update.get("id"))
-            for update in updates
-            if isinstance(update, dict) and update.get("id")
-        )
-        logger.info(
-            "Buffer update created",
-            extra={
-                "profiles": len(post.profile_ids),
-                "mode": post.mode.value,
-                "updates": len(update_ids),
-            },
-        )
-        return PublishResult(update_ids=update_ids, message=payload.get("message"))
+        result = data.get("createPost")
+        if not isinstance(result, dict):
+            raise PublisherAPIError("Buffer returned an invalid response while creating the post.")
+        created = result.get("post")
+        if isinstance(created, dict) and created.get("id"):
+            return str(created["id"])
+        message = result.get("message")
+        raise PublisherAPIError(f"Buffer refused the post: {message or 'unknown error'}.")
 
     # ---------------------------------------------------------------- helpers
     def _check_token(self, token: OAuthToken) -> None:
         if not token.access_token:
             raise PublisherAuthError("Buffer is not connected.")
-        if token.is_expired():
-            raise PublisherAuthError("Your Buffer authorization expired. Please connect again.")
+        if token.is_expired(leeway=0):
+            raise PublisherAuthError(_EXPIRED_MESSAGE)
+
+    async def _graphql(
+        self,
+        token: OAuthToken,
+        query: str,
+        variables: dict[str, Any] | None,
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "POST",
+            self.config.api_url,
+            json_body={"query": query, "variables": variables or {}},
+            auth=token,
+        )
+        self._raise_for_retryable(response)
+        payload = self._json_or_error(response, action=action)
+        if not isinstance(payload, dict):
+            raise PublisherAPIError(
+                f"Buffer returned an invalid response while trying to {action}."
+            )
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            raise self._graphql_error(errors[0], action=action)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise PublisherAPIError(
+                f"Buffer returned an invalid response while trying to {action}."
+            )
+        return data
+
+    @staticmethod
+    def _graphql_error(error: Any, *, action: str) -> PublisherError:
+        """Map a top-level GraphQL error (``extensions.code``) to a publisher error."""
+        error = error if isinstance(error, dict) else {}
+        extensions = error.get("extensions")
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code in ("UNAUTHORIZED", "UNAUTHENTICATED"):
+            return PublisherAuthError(
+                "Buffer rejected the access token. Please connect Buffer again."
+            )
+        if code == "RATE_LIMIT_EXCEEDED":
+            return PublisherError(
+                "Buffer's rate limit was reached. Please try again in a minute.",
+                retryable=True,
+                status_code=429,
+            )
+        if code == "UNEXPECTED":
+            return PublisherError(
+                "Buffer is temporarily unavailable. Please try again.", retryable=True
+            )
+        message = error.get("message")
+        detail = message if isinstance(message, str) and message else "unknown error"
+        return PublisherAPIError(f"Buffer could not {action}: {detail}.")
 
     async def _request(
         self,
@@ -282,16 +448,20 @@ class BufferClient:
         url: str,
         *,
         auth: OAuthToken | None,
-        data: dict[str, str] | list[tuple[str, str]] | None = None,
+        data: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
     ) -> httpx.Response:
         headers = {"Accept": "application/json"}
         if auth is not None:
             headers["Authorization"] = f"Bearer {auth.access_token}"
+        body: str | None = None
+        if data is not None:
+            body = urlencode(data)
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        elif json_body is not None:
+            body = json.dumps(json_body)
+            headers["Content-Type"] = "application/json"
         try:
-            # ``content`` + explicit header keeps list-of-tuples (repeated keys) intact.
-            body = urlencode(data) if data is not None else None
-            if body is not None:
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
             return await self._http.request(
                 method, url, content=body, headers=headers, timeout=self._timeout
             )
@@ -311,13 +481,14 @@ class BufferClient:
             )
 
     @staticmethod
-    def _error_message(response: httpx.Response) -> str | None:
+    def _error_field(response: httpx.Response, *keys: str) -> str | None:
+        """First non-empty string among ``keys`` of a JSON error body."""
         try:
             body = response.json()
         except ValueError:
             return None
         if isinstance(body, dict):
-            for key in ("message", "error_description", "error"):
+            for key in keys:
                 value = body.get(key)
                 if isinstance(value, str) and value:
                     return value
@@ -336,7 +507,7 @@ class BufferClient:
                 status_code=status,
             )
         if response.is_error:
-            detail = self._error_message(response)
+            detail = self._error_field(response, "message", "error_description", "error")
             raise PublisherAPIError(
                 f"Buffer could not {action}: {detail or f'HTTP {status}'}.", status_code=status
             )

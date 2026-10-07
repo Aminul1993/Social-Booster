@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -20,6 +21,7 @@ from app.security import (
     ensure_session,
     get_csrf_token,
     issue_oauth_state,
+    pkce_verifier,
     pop_flashes,
     verify_csrf,
 )
@@ -93,7 +95,7 @@ class TestOAuthState:
     def test_roundtrip_is_single_use(self) -> None:
         request = make_request(session={})
         state = issue_oauth_state(request)
-        consume_oauth_state(request, state)
+        assert consume_oauth_state(request, state) == state
         assert OAUTH_STATE_KEY not in request.session
         with pytest.raises(OAuthStateError):
             consume_oauth_state(request, state)
@@ -123,6 +125,15 @@ class TestOAuthState:
         request = make_request(session={OAUTH_STATE_KEY: stored})
         with pytest.raises(OAuthStateError):
             consume_oauth_state(request, "s")
+
+    def test_pkce_verifier_is_derived_from_state_and_secret(self) -> None:
+        verifier = pkce_verifier("state-1", secret="secret-a")
+        assert verifier == pkce_verifier("state-1", secret="secret-a")  # no storage needed
+        assert verifier != pkce_verifier("state-2", secret="secret-a")
+        assert verifier != pkce_verifier("state-1", secret="secret-b")
+        # RFC 7636: 43-128 characters from the unreserved set.
+        assert len(verifier) == 43
+        assert re.fullmatch(r"[A-Za-z0-9\-._~]+", verifier)
 
 
 class TestFlash:

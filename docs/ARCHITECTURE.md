@@ -189,7 +189,7 @@ flowchart TB
     magic -- no --> rej3[reject: content mismatch]
     magic -- yes --> pil[Pillow verify + pixel budget<br/>decompression-bomb guard]
     pil -- error --> rej4[reject: corrupted]
-    pil --> clean[apply EXIF orientation,<br/>re-encode, strip EXIF/XMP/GPS]
+    pil --> clean[apply EXIF orientation,<br/>downscale to IMAGE_MAX_DIMENSION,<br/>re-encode, strip EXIF/XMP/GPS]
     clean --> store[Storage.save -> random key<br/>atomic write]
     store --> tag[VisionService.classify<br/>thread pool + semaphore + timeout]
     tag -- VisionError --> degrade[draft without labels<br/>user types keywords]
@@ -197,6 +197,15 @@ flowchart TB
     labels --> draft[(Draft row)]
     degrade --> draft
 ```
+
+Decoded images cost ~4 bytes per pixel, so each worker decodes at most
+`IMAGE_MAX_CONCURRENCY` (default 1) images at a time across all requests; the
+rest of a batch waits in the multipart spool files on disk. Images whose longer
+side exceeds `IMAGE_MAX_DIMENSION` (default 2048 px) are downscaled before
+storing; JPEGs are decoded straight at 1/2, 1/4 or 1/8 scale by libjpeg
+(`Image.draft`), so a large photo never exists in memory at full size. EXIF
+orientation is applied in place, and ResNet-50 gets a <=512 px preview made
+while the pixels are decoded instead of decoding the stored file again.
 
 All CPU-bound work (Pillow, PyTorch) runs off the event loop: Pillow through
 `asyncio.to_thread`, ResNet-50 on a dedicated `ThreadPoolExecutor` sized by
@@ -247,20 +256,25 @@ sequenceDiagram
     participant A as App
     participant BF as Buffer
     B->>A: GET /buffer/auth
-    A->>A: state = token_urlsafe(32)<br/>stored in signed session (+ issue time)
-    A-->>B: 303 -> bufferapp.com/oauth2/authorize?client_id&redirect_uri&response_type=code&state
+    A->>A: state = token_urlsafe(32)<br/>stored in signed session (+ issue time)<br/>PKCE verifier = HMAC(secret, state), never stored
+    A-->>B: 303 -> auth.buffer.com/auth?client_id&redirect_uri&response_type=code<br/>&scope&state&code_challenge (S256)&prompt=consent
     B->>BF: consent screen
     BF-->>B: 302 -> /buffer/callback?code&state
     B->>A: GET /buffer/callback?code&state
     A->>A: consume_oauth_state: single-use, 10 min TTL,<br/>constant-time compare
-    A->>BF: POST /1/oauth2/token.json (form, client secret)
-    BF-->>A: {"access_token": ...}
+    A->>BF: POST auth.buffer.com/token (form, client secret, code_verifier)
+    BF-->>A: {"access_token", "refresh_token", "expires_in": 3600}
     A->>A: Fernet-encrypt token, store by session id (SQLite)
     A-->>B: 303 -> / + flash "Buffer connected"
     B->>A: GET /
-    A->>BF: GET /1/profiles.json (Bearer) - cached 5 min
+    A->>BF: POST api.buffer.com (Bearer, GraphQL)<br/>account.organizations, then channels - cached 5 min
     A-->>B: page with profiles in navbar and schedule forms
 ```
+
+Access tokens last about an hour. When a stored token is (nearly) expired the
+first request renews it at the token endpoint with `grant_type=refresh_token`
+and stores the rotated pair. Refresh tokens are single-use (reusing one
+revokes the grant), so renewals are serialised per session and never retried.
 
 Errors at every step (`error=access_denied`, missing/forged/expired state,
 code exchange failure) redirect home with a flash toast. A token Buffer later
@@ -285,15 +299,19 @@ sequenceDiagram
     else valid
         R->>R: save edited copy, build absolute media URL (PUBLIC_BASE_URL)
         R->>P: publish(PostRequest)
-        P->>BF: POST /1/updates/create.json<br/>profile_ids[], text, media[photo], media[thumbnail],<br/>scheduled_at (UTC) | now=true | (queue)
-        BF-->>P: {"success": true, "updates": [...]}
+        loop each selected channel
+            P->>BF: GraphQL createPost(channelId, text, assets.image.url,<br/>mode customScheduled + dueAt (UTC) | shareNow | addToQueue)
+            BF-->>P: PostActionSuccess { post { id } } | MutationError { message }
+        end
         R->>R: record PublishRecord, status = published
         R-->>R: card with publish summary + success toast
     end
 ```
 
 Only connection failures that happened *before* the request was sent are
-retried when posting, so a retry can never create a duplicate post.
+retried when posting, so a retry can never create a duplicate post. Channels
+are independent: if Buffer refuses some of them, the others are still sent and
+the toast names the refused ones; only when every channel fails is it an error.
 
 ## 10. Security model
 

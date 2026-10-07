@@ -52,8 +52,10 @@ pages. Invalid values stop the application at start-up with a clear message.
 |---|---|---|
 | `MAX_UPLOAD_SIZE_MB` | `10` | Per-file size limit (spec: 10 MB). |
 | `MAX_FILES_PER_UPLOAD` | `10` | Files per request. |
-| `MAX_IMAGE_PIXELS` | `40000000` | Pixel budget (decompression-bomb protection). |
+| `MAX_IMAGE_PIXELS` | `40000000` | Pixel budget of the *original* image (decompression-bomb protection). Also caps upload memory for PNG/WebP: ~4 bytes per pixel while an image is processed (WebP ~16 while decoding). |
 | `IMAGE_QUALITY` | `90` | JPEG/WebP re-encode quality (50-100). |
+| `IMAGE_MAX_DIMENSION` | `2048` | Larger images are downscaled (aspect ratio kept) so their longer side is at most this many pixels before they are stored and published. JPEGs are decoded at reduced scale, so big photos never sit in memory at full size. `0` keeps the original size. |
+| `IMAGE_MAX_CONCURRENCY` | `1` | Images decoded and re-encoded at once per worker, across all requests; the rest of a batch waits on disk. Raise for throughput only if memory allows. |
 
 ## Vision (ResNet-50)
 
@@ -87,17 +89,21 @@ pages. Invalid values stop the application at start-up with a clear message.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BUFFER_CLIENT_ID` | - | OAuth client id of your Buffer app. |
+| `BUFFER_CLIENT_ID` | - | OAuth client id (Buffer -> Settings -> API, private client). |
 | `BUFFER_CLIENT_SECRET` | - | OAuth client secret. |
-| `BUFFER_REDIRECT_URI` | `http://localhost:8000/buffer/callback` | Must exactly match the redirect URI registered with Buffer. |
-| `BUFFER_OAUTH_URL` | `https://bufferapp.com/oauth2/authorize` | Consent screen. |
-| `BUFFER_TOKEN_URL` | `https://api.bufferapp.com/1/oauth2/token.json` | Code -> token exchange. |
-| `BUFFER_PROFILES_URL` | `https://api.bufferapp.com/1/profiles.json` | Connected social profiles. |
-| `BUFFER_POST_URL` | `https://api.bufferapp.com/1/updates/create.json` | Create/schedule an update. |
-| `BUFFER_SCOPE` | - | Optional `scope` parameter for the consent URL. |
+| `BUFFER_REDIRECT_URI` | `http://localhost:8000/buffer/callback` | Must exactly match a redirect URI registered with Buffer, which requires `https` (also on localhost). |
+| `BUFFER_OAUTH_URL` | `https://auth.buffer.com/auth` | Consent screen (authorization code + PKCE). |
+| `BUFFER_TOKEN_URL` | `https://auth.buffer.com/token` | Code -> token exchange and token refresh. |
+| `BUFFER_API_URL` | `https://api.buffer.com` | GraphQL API: organizations, channels, `createPost`. |
+| `BUFFER_SCOPE` | `account:read posts:write offline_access` | Scopes requested on the consent screen; `offline_access` gives the refresh token that renews the one-hour access tokens. |
 | `BUFFER_TIMEOUT_SECONDS` | `20` | Per request. |
-| `BUFFER_MAX_RETRIES` | `3` | Attempts for profile listing; posting only retries connection failures. |
-| `BUFFER_PROFILES_CACHE_SECONDS` | `300` | Profile cache per session (`0` disables). |
+| `BUFFER_MAX_RETRIES` | `3` | Attempts for channel listing; posting only retries connection failures; token requests are never retried. |
+| `BUFFER_PROFILES_CACHE_SECONDS` | `300` | Channel cache per session (`0` disables). |
+
+The legacy v1 URLs (`bufferapp.com/oauth2/authorize`, `api.bufferapp.com/1/...`)
+reject clients created under Buffer's Settings -> API with `invalid_client`;
+the app logs a warning at start-up if any `BUFFER_*_URL` still points there.
+`BUFFER_PROFILES_URL` and `BUFFER_POST_URL` no longer exist and are ignored.
 
 ## Rate limiting
 

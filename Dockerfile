@@ -35,6 +35,9 @@ LABEL org.opencontainers.image.title="marketing-ai-builder" \
       org.opencontainers.image.version="1.0.0" \
       org.opencontainers.image.licenses="MIT"
 
+# MALLOC_MMAP_THRESHOLD_: a fixed threshold stops glibc from raising it after
+# Pillow frees its 16 MB blocks, so decoded images go back to the OS instead of
+# staying in per-thread arenas (~200 MB RSS kept per worker after a large upload).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
@@ -44,7 +47,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=8000 \
     WEB_CONCURRENCY=2 \
-    PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+    PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus \
+    MALLOC_MMAP_THRESHOLD_=1048576
 
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app

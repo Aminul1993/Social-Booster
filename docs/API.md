@@ -42,7 +42,7 @@ Upload one or more images.
 | | |
 |---|---|
 | Body | `multipart/form-data`, repeated field `files` |
-| Limits | `MAX_FILES_PER_UPLOAD` files, `MAX_UPLOAD_SIZE_MB` each, `MAX_IMAGE_PIXELS`, `MAX_DRAFTS_PER_SESSION` |
+| Limits | `MAX_FILES_PER_UPLOAD` files, `MAX_UPLOAD_SIZE_MB` each, `MAX_IMAGE_PIXELS`, `MAX_DRAFTS_PER_SESSION`; images larger than `IMAGE_MAX_DIMENSION` px are downscaled |
 | Accepted | JPEG, PNG, WebP (declared MIME **and** magic bytes must agree) |
 | Rate limit | `RATE_LIMIT_UPLOAD` |
 
@@ -140,24 +140,27 @@ Publish a draft through Buffer.
 | `scheduled_for` | `YYYY-MM-DDTHH:MM` | required for `schedule`; >= 1 minute ahead, <= 365 days |
 | `timezone` | IANA name | browser timezone (filled by the page); default `UTC` |
 
-What is sent to Buffer (`BUFFER_POST_URL`, form-encoded, `Authorization: Bearer`):
+What is sent to Buffer (`BUFFER_API_URL`, GraphQL, `Authorization: Bearer`), one
+`createPost` mutation per selected profile (Buffer calls them channels):
 
-```
-profile_ids[]=<id>&profile_ids[]=<id>
-text=<caption>\n\n<#tag #tag>
-media[photo]=<PUBLIC_BASE_URL>/uploads/<key>
-media[thumbnail]=<PUBLIC_BASE_URL>/uploads/<key>
-scheduled_at=2026-11-12T15:00:00Z      (mode=schedule)
-now=true                               (mode=now)
+```jsonc
+{
+  "channelId": "<id>",
+  "text": "<caption>\n\n<#tag #tag>",
+  "schedulingType": "automatic",
+  "mode": "customScheduled",          // schedule; "addToQueue" for queue, "shareNow" for now
+  "dueAt": "2026-11-12T15:00:00Z",    // schedule only
+  "assets": [{"image": {"url": "<PUBLIC_BASE_URL>/uploads/<key>"}}]
+}
 ```
 
 | Status | Meaning |
 |---|---|
-| 200 | card with publish summary; toast `success` (or `warning` when the image URL is not publicly reachable) |
+| 200 | card with publish summary; toast `success` (or `warning` when the image URL is not publicly reachable, or Buffer refused some of the profiles) |
 | 401 | Buffer not connected/configured (toast), or token revoked (`HX-Refresh` + flash) |
 | 404 | draft not found in this session |
 | 422 | card re-rendered with field errors |
-| 502 | Buffer refused the post (its message is shown) |
+| 502 | Buffer refused the post for every profile (its message is shown) |
 | 503 | Buffer unreachable / 5xx |
 
 ---

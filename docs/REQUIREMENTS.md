@@ -30,11 +30,11 @@ Legend: **Done** = implemented and verified by the listed tests;
 | FR-15 | Success feedback fragment after scheduling | §4 | card notice + publish summary + `HX-Trigger` toast | scheduling workflow | Done |
 | FR-16 | UI shows whether Buffer is connected / offers "Connect Buffer" | §8, §9 | `partials/_buffer_status.html`, schedule panel states | OAuth workflow, `test_routes.py::TestIndex` | Done |
 | FR-17 | Drag-and-drop upload zone | §8 | `index.html` dropzone + `app.js` drop handler | browser E2E (file input path), manual | Done |
-| FR-18 | Multiple Buffer profiles + profile selection | §12, brief Ph.7 | checkbox list per card, `profile_ids[]`, server-side allow-list | `test_scheduling_workflow.py::test_unknown_profile_rejected`, E2E | Done |
+| FR-18 | Multiple Buffer profiles + profile selection | §12, brief Ph.7 | checkbox list per card, one `createPost` per channel, server-side allow-list | `test_scheduling_workflow.py::test_unknown_profile_rejected`, E2E | Done |
 | FR-19 | Image preview | §12, brief Ph.5 | client-side thumbnails before upload, card images, full-size modal | browser E2E (modal) | Done |
 | FR-20 | Home page rendering connection state | §4 `index` | `app/routes/pages.py::index` | `test_routes.py::TestIndex` | Done |
 | FR-21 | Publishing modes and future extensibility of providers | brief Ph.7 | `PublishMode` (schedule/queue/now), `SocialPublisher` protocol | `test_scheduling_workflow.py::test_queue_and_now_modes`, `test_buffer.py::test_implements_publisher_protocol` | Done |
-| FR-22 | Media posting | brief Ph.7 | `media[photo]` + `media[thumbnail]` with absolute `PUBLIC_BASE_URL` | `test_buffer.py::test_schedule_payload`, scheduling workflow | Done |
+| FR-22 | Media posting | brief Ph.7 | `assets: [{image: {url}}]` with absolute `PUBLIC_BASE_URL` | `test_buffer.py::test_schedule_creates_one_post_per_channel`, scheduling workflow | Done |
 
 ### UI / UX (brief Phase 5)
 
@@ -117,8 +117,8 @@ Legend: **Done** = implemented and verified by the listed tests;
 |---|---|---|---|
 | D-01 | `services/`, `templates/`, `static/` inside `app/` | top-level `services/`, `templates/`, `static/` | Required layout of the build brief; `steps.md`'s own `main.py` already resolved templates from the project root. |
 | D-02 | `OLLAMA_ENDPOINT` default `https://api.ollama.com/v1/chat/completions`, model hard-coded `llama3.2:latest` | default `https://ollama.com/v1/chat/completions`, new `OLLAMA_MODEL` (default `gpt-oss:120b`) | `ollama.com` is Ollama Cloud's documented API host and `llama3.2` is not a cloud model. Both remain configurable; native `/api/chat` also supported for self-hosted Ollama. |
-| D-03 | Buffer URLs on `buffer.com` / `api.buffer.com`; profiles URL hard-coded | `bufferapp.com` / `api.bufferapp.com` defaults; same variable names plus `BUFFER_PROFILES_URL` | Buffer's v1 publish API is served from `api.bufferapp.com`; every URL is overridable. |
-| D-04 | Token exchange and update creation sent as JSON; `media.picture` | form-encoded bodies; `media[photo]` + `media[thumbnail]`; `profile_ids[]` | Buffer's v1 API expects form encoding; image updates require photo + thumbnail. |
+| D-03 | Buffer URLs on `buffer.com` / `api.buffer.com`; profiles URL hard-coded | `auth.buffer.com` (OAuth + PKCE) and `api.buffer.com` (GraphQL) defaults via `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_API_URL` | Buffer's current API; the v1 `bufferapp.com` endpoints reject clients from Settings -> API (`invalid_client`). Every URL is overridable. |
+| D-04 | Token exchange and update creation sent as JSON; `media.picture` | form-encoded token requests; GraphQL `createPost` per channel with `assets.image.url` | OAuth token endpoints take form bodies; Buffer's GraphQL API posts to one channel per mutation. |
 | D-05 | Access token stored in a signed cookie | Fernet-encrypted server-side storage keyed by an opaque session id | A signed cookie is readable by the browser; the stated goal ("the token never hits the browser") required server-side storage. |
 | D-06 | `torch.hub.load(..., pretrained=True)` + downloaded `imagenet_classes.txt` | `torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)`; class names from weight metadata | `pretrained=` is removed in current torchvision; metadata removes the extra download. Weights are baked into the Docker image. |
 | D-07 | Prompt asks for two lines `CAPTION:` / `HASHTAGS:` | prompt asks for JSON; parser accepts JSON, the original line format and free text, plus one repair turn | Structured parsing and error recovery requirements. |

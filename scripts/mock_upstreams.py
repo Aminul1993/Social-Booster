@@ -1,8 +1,8 @@
 """Local stand-ins for Ollama Cloud and Buffer - demo and UI-test the full flow offline.
 
-Buffer no longer hands out API apps to everyone and Ollama Cloud needs a paid
-key, so this tiny server mimics the four Buffer endpoints and the chat
-completions endpoint the app uses. Nothing is posted anywhere.
+Buffer API clients need a Buffer account and Ollama Cloud needs a paid key, so
+this tiny server mimics Buffer's OAuth (with PKCE) and GraphQL endpoints and
+the chat completions endpoint the app uses. Nothing is posted anywhere.
 
     python scripts/mock_upstreams.py --port 8020
 
@@ -12,10 +12,9 @@ Then start the app with (e.g. in .env):
     OLLAMA_API_KEY=mock
     BUFFER_CLIENT_ID=mock
     BUFFER_CLIENT_SECRET=mock
-    BUFFER_OAUTH_URL=http://127.0.0.1:8020/oauth2/authorize
-    BUFFER_TOKEN_URL=http://127.0.0.1:8020/1/oauth2/token.json
-    BUFFER_PROFILES_URL=http://127.0.0.1:8020/1/profiles.json
-    BUFFER_POST_URL=http://127.0.0.1:8020/1/updates/create.json
+    BUFFER_OAUTH_URL=http://127.0.0.1:8020/auth
+    BUFFER_TOKEN_URL=http://127.0.0.1:8020/token
+    BUFFER_API_URL=http://127.0.0.1:8020/graphql
 
 Received posts are listed at http://127.0.0.1:8020/posts.
 """
@@ -23,9 +22,12 @@ Received posts are listed at http://127.0.0.1:8020/posts.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import html
 import json
 import re
+import secrets
 import uuid
 from typing import Any
 from urllib.parse import urlencode
@@ -36,14 +38,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 app = FastAPI(title="Mock Ollama + Buffer")
 POSTS: list[dict[str, Any]] = []
-PROFILES = [
-    {
-        "id": "mock-instagram",
-        "service": "instagram",
-        "formatted_username": "@acme.studio",
-    },
-    {"id": "mock-linkedin", "service": "linkedin", "formatted_username": "Acme Studio"},
-    {"id": "mock-x", "service": "twitter", "formatted_username": "@acme"},
+CODES: dict[str, str] = {}  # authorization code -> PKCE code_challenge
+CHANNELS = [
+    {"id": "mock-instagram", "service": "instagram", "name": "acme.studio", "avatar": ""},
+    {"id": "mock-linkedin", "service": "linkedin", "name": "Acme Studio", "avatar": ""},
+    {"id": "mock-x", "service": "twitter", "name": "acme", "avatar": ""},
 ]
 
 
@@ -75,9 +74,13 @@ async def chat(request: Request) -> JSONResponse:
     )
 
 
-@app.get("/oauth2/authorize", response_class=HTMLResponse)
-async def authorize(redirect_uri: str, state: str, client_id: str = "") -> HTMLResponse:
-    allow = f"{redirect_uri}?{urlencode({'code': 'mock-code', 'state': state})}"
+@app.get("/auth", response_class=HTMLResponse)
+async def authorize(
+    redirect_uri: str, state: str, code_challenge: str, client_id: str = ""
+) -> HTMLResponse:
+    code = secrets.token_urlsafe(16)
+    CODES[code] = code_challenge
+    allow = f"{redirect_uri}?{urlencode({'code': code, 'state': state})}"
     deny = f"{redirect_uri}?{urlencode({'error': 'access_denied', 'error_description': 'The user denied access', 'state': state})}"
     return HTMLResponse(
         "<!doctype html><title>Mock Buffer</title>"
@@ -88,28 +91,34 @@ async def authorize(redirect_uri: str, state: str, client_id: str = "") -> HTMLR
     )
 
 
-@app.post("/1/oauth2/token.json")
-async def token() -> dict[str, str]:
-    return {"access_token": "1/mock-access-token", "token_type": "bearer"}
-
-
-@app.get("/1/profiles.json")
-async def profiles() -> list[dict[str, str]]:
-    return PROFILES
-
-
-@app.post("/1/updates/create.json")
-async def create_update(request: Request) -> dict[str, Any]:
+@app.post("/token", response_model=None)
+async def token(request: Request) -> dict[str, Any] | JSONResponse:
     form = await request.form()
-    profile_ids = form.getlist("profile_ids[]")
-    post = {key: form.getlist(key) for key in form}
-    POSTS.append(post)
+    if form.get("grant_type") == "authorization_code":
+        challenge = CODES.pop(str(form.get("code")), None)
+        digest = hashlib.sha256(str(form.get("code_verifier", "")).encode()).digest()
+        if challenge != base64.urlsafe_b64encode(digest).rstrip(b"=").decode():
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
     return {
-        "success": True,
-        "buffer_count": len(POSTS),
-        "message": "One more post in your Buffer.",
-        "updates": [{"id": uuid.uuid4().hex[:12], "profile_id": pid} for pid in profile_ids],
+        "access_token": f"mock-access-{secrets.token_hex(4)}",
+        "refresh_token": f"mock-refresh-{secrets.token_hex(4)}",
+        "token_type": "Bearer",
+        "expires_in": 3600,
     }
+
+
+@app.post("/graphql")
+async def graphql(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    query: str = body["query"]
+    variables: dict[str, Any] = body.get("variables") or {}
+    if "createPost" in query:
+        POSTS.append(variables["input"])
+        post = {"id": uuid.uuid4().hex[:12]}
+        return {"data": {"createPost": {"__typename": "PostActionSuccess", "post": post}}}
+    if "channels(" in query:
+        return {"data": {"channels": CHANNELS}}
+    return {"data": {"account": {"organizations": [{"id": "mock-org"}]}}}
 
 
 @app.get("/posts")

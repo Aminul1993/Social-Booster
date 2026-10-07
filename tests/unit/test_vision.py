@@ -71,6 +71,14 @@ class TestVisionService:
             await vision.close()
         assert [label.name for label in labels] == ["cat"]
 
+    async def test_classify_decoded_image(self) -> None:
+        vision = service(top_k=1)
+        try:
+            labels = await vision.classify(Image.new("RGB", (32, 32)))
+        finally:
+            await vision.close()
+        assert [label.name for label in labels] == ["golden retriever"]
+
     async def test_disabled_backend(self) -> None:
         vision = service(backend="disabled")
         await vision.start()

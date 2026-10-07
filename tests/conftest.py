@@ -15,9 +15,8 @@ from app.config import Settings
 from app.main import create_app
 from services.vision import ClassifierFactory
 from tests.helpers import (
+    BUFFER_API_URL,
     BUFFER_OAUTH_URL,
-    BUFFER_POST_URL,
-    BUFFER_PROFILES_URL,
     BUFFER_TOKEN_URL,
     OLLAMA_URL,
     AppClient,
@@ -60,8 +59,7 @@ def settings_factory(tmp_path: Path) -> SettingsFactory:
             "buffer_redirect_uri": "http://testserver/buffer/callback",
             "buffer_oauth_url": BUFFER_OAUTH_URL,
             "buffer_token_url": BUFFER_TOKEN_URL,
-            "buffer_profiles_url": BUFFER_PROFILES_URL,
-            "buffer_post_url": BUFFER_POST_URL,
+            "buffer_api_url": BUFFER_API_URL,
             "buffer_max_retries": 1,
             "rate_limit_enabled": False,
             "draft_retention_hours": 0,

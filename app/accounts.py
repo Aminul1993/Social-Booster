@@ -1,14 +1,17 @@
 """Connected publishing accounts: token persistence + profile caching.
 
 Wraps a :class:`~services.publishing.SocialPublisher` with per-session token
-storage. Whenever the provider rejects a token, the stored token is deleted so
-the UI falls back to "Connect Buffer" instead of failing repeatedly.
+storage. Expired access tokens are renewed with their refresh token on first
+use. Whenever the provider rejects a token, the stored token is deleted so the
+UI falls back to "Connect Buffer" instead of failing repeatedly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,6 +61,9 @@ class PublisherAccounts:
         self._max_cached = max_cached_sessions
         self._clock = clock
         self._cache: OrderedDict[str, tuple[float, list[PublishingProfile]]] = OrderedDict()
+        self._refresh_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
 
     @property
     def provider(self) -> str:
@@ -65,14 +71,39 @@ class PublisherAccounts:
 
     # ------------------------------------------------------------------ tokens
     async def token(self, session_id: str) -> OAuthToken | None:
-        token = await self._tokens.get(session_id, self.provider)
-        if token is not None and token.is_expired():
-            await self.disconnect(session_id)
-            return None
-        return token
+        """The session's token, renewed first when it is (about to be) expired.
 
-    async def connect(self, session_id: str, code: str) -> OAuthToken:
-        token = await self.publisher.exchange_code(code)
+        Raises:
+            PublisherError: the renewal failed for a transient reason.
+        """
+        token = await self._tokens.get(session_id, self.provider)
+        if token is None or not token.is_expired():
+            return token
+        # Refresh tokens are single-use and reusing one revokes the grant, so
+        # concurrent requests of a session must not refresh in parallel.
+        async with self._refresh_lock(session_id):
+            token = await self._tokens.get(session_id, self.provider)
+            if token is None or not token.is_expired():
+                return token  # renewed while we waited
+            if not token.refresh_token:
+                await self.disconnect(session_id)
+                return None
+            try:
+                token = await self.publisher.refresh(token)
+            except PublisherAuthError:
+                await self.disconnect(session_id)
+                return None
+            await self._tokens.save(session_id, self.provider, token)
+            return token
+
+    def _refresh_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._refresh_locks.get(session_id)
+        if lock is None:
+            lock = self._refresh_locks[session_id] = asyncio.Lock()
+        return lock
+
+    async def connect(self, session_id: str, code: str, *, code_verifier: str) -> OAuthToken:
+        token = await self.publisher.exchange_code(code, code_verifier=code_verifier)
         await self._tokens.save(session_id, self.provider, token)
         self._cache.pop(session_id, None)
         return token
@@ -121,10 +152,10 @@ class PublisherAccounts:
 
         if not self.publisher.configured:
             return build(connected=False)
-        token = await self.token(session_id)
-        if token is None:
-            return build(connected=False)
         try:
+            token = await self.token(session_id)
+            if token is None:
+                return build(connected=False)
             profiles = await self.profiles(session_id, token, refresh=refresh)
         except PublisherAuthError as exc:
             return build(connected=False, error=exc.message)

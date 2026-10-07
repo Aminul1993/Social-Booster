@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,21 @@ class TestDefaults:
         assert settings.database_path == BASE_DIR / "data" / "app.db"
         assert settings.upload_dir == BASE_DIR / "uploads"
         assert settings.ollama_endpoint == "https://ollama.com/v1/chat/completions"
-        assert settings.buffer_token_url.endswith("/1/oauth2/token.json")
+        assert settings.buffer_oauth_url == "https://auth.buffer.com/auth"
+        assert settings.buffer_token_url == "https://auth.buffer.com/token"
+        assert settings.buffer_api_url == "https://api.buffer.com"
+        assert settings.buffer_scope == "account:read posts:write offline_access"
+
+    def test_warns_about_legacy_buffer_urls(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="app.config"):
+            make(
+                buffer_oauth_url="https://bufferapp.com/oauth2/authorize",
+                buffer_token_url="https://api.bufferapp.com/1/oauth2/token.json",
+            )
+        assert "BUFFER_OAUTH_URL, BUFFER_TOKEN_URL point at Buffer's retired v1 API" in caplog.text
+        caplog.clear()
+        make()
+        assert "retired" not in caplog.text
 
     def test_secrets_are_hidden(self) -> None:
         settings = make(ollama_api_key="sk-super-secret", buffer_client_secret="bsecret")

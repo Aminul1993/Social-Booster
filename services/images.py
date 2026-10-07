@@ -7,11 +7,16 @@ disk. The processor:
 2. checks the declared MIME type against an allow-list,
 3. sniffs the magic bytes and rejects content/type mismatches,
 4. lets Pillow fully decode the image (rejecting corrupt files and
-   decompression bombs via an explicit pixel budget), and
-5. re-encodes the pixels, which strips EXIF/GPS metadata and neutralises
+   decompression bombs via an explicit pixel budget),
+5. downscales images whose longer side exceeds ``max_dimension``, and
+6. re-encodes the pixels, which strips EXIF/GPS metadata and neutralises
    polyglot files. EXIF orientation is applied first so photos stay upright.
 
 All work here is CPU-bound and synchronous; callers run it in a thread.
+Decoded pixels cost ~4 bytes each (a 40 MP photo is ~150 MB), so the image is
+only ever held once: JPEGs that will be downscaled are decoded at reduced scale
+by libjpeg, orientation is applied in place, and the copy the vision model
+needs is a small preview made while the pixels are decoded anyway.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from __future__ import annotations
 import io
 import unicodedata
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath, PureWindowsPath
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -56,6 +61,10 @@ _DECLARED_TYPE_ALIASES: dict[str, ImageFormat | None] = {
     "": None,
 }
 
+#: Short side (px) of the preview handed to the vision model. ResNet-50 resizes
+#: to 232-256 px before its 224 px crop, so more detail than this is never used.
+PREVIEW_SIZE = 512
+
 
 class InvalidImageError(ValueError):
     """The upload is not an acceptable image. ``str(exc)`` is user-safe."""
@@ -69,6 +78,8 @@ class ProcessedImage:
     format: ImageFormat
     width: int
     height: int
+    #: Small RGB copy for image tagging (only when requested).
+    preview: Image.Image | None = None
 
 
 def format_megabytes(size: int) -> str:
@@ -109,6 +120,18 @@ def safe_display_name(filename: str | None, *, max_length: int = 120) -> str:
     return name
 
 
+def make_preview(image: Image.Image, size: int = PREVIEW_SIZE) -> Image.Image:
+    """Return an RGB copy of ``image`` whose short side is at most ``size`` px."""
+    if image.mode not in ("RGB", "L"):
+        # Alpha/palette/16-bit modes can't be downscaled well as they are.
+        image = image.convert("RGB")
+    scale = size / min(image.size)
+    if scale < 1:
+        target = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        image = image.resize(target, Image.Resampling.BICUBIC, reducing_gap=2.0)
+    return image.convert("RGB")
+
+
 class ImageProcessor:
     """Validate and sanitise uploaded images."""
 
@@ -118,15 +141,24 @@ class ImageProcessor:
         max_bytes: int,
         max_pixels: int,
         quality: int = 90,
+        max_dimension: int | None = None,
     ) -> None:
         if max_bytes <= 0 or max_pixels <= 0:
             raise ValueError("max_bytes and max_pixels must be positive")
+        if max_dimension is not None and max_dimension <= 0:
+            raise ValueError("max_dimension must be positive (or None to keep the size)")
         self.max_bytes = max_bytes
         self.max_pixels = max_pixels
         self.quality = quality
+        self.max_dimension = max_dimension
 
-    def process(self, data: bytes, *, declared_content_type: str | None) -> ProcessedImage:
+    def process(
+        self, data: bytes, *, declared_content_type: str | None, preview: bool = False
+    ) -> ProcessedImage:
         """Validate ``data`` and return a re-encoded, metadata-free copy.
+
+        With ``preview=True`` the result also carries a :func:`make_preview`
+        thumbnail, so tagging never has to decode the full-size image again.
 
         Raises:
             InvalidImageError: with a message suitable for the end user.
@@ -150,7 +182,7 @@ class ImageProcessor:
             raise InvalidImageError("The file content does not match its declared image type.")
 
         try:
-            return self._decode_and_reencode(data, detected)
+            return self._decode_and_reencode(data, detected, preview=preview)
         except InvalidImageError:
             raise
         except (
@@ -163,34 +195,72 @@ class ImageProcessor:
         ) as exc:
             raise InvalidImageError("The image is corrupted or could not be read.") from exc
 
-    def _decode_and_reencode(self, data: bytes, detected: ImageFormat) -> ProcessedImage:
+    def _decode_and_reencode(
+        self, data: bytes, detected: ImageFormat, *, preview: bool
+    ) -> ProcessedImage:
         with warnings.catch_warnings():
             # Treat Pillow's bomb warning as an error; our own budget is stricter anyway.
             warnings.simplefilter("error", Image.DecompressionBombWarning)
 
             # Pass 1: structural verification (cheap, does not decode pixels).
-            with Image.open(io.BytesIO(data)) as probe:
-                if probe.format != detected.pillow_name:
-                    raise InvalidImageError(
-                        "The file content does not match its declared image type."
-                    )
-                width, height = probe.size
-                if width <= 0 or height <= 0:
-                    raise InvalidImageError("The image has no pixels.")
-                if width * height > self.max_pixels:
-                    raise InvalidImageError(
-                        f"The image is too large ({width}x{height} pixels). "
-                        f"Maximum is {self.max_pixels:,} pixels."
-                    )
-                probe.verify()
+            self._verify(data, detected)
 
             # Pass 2: full decode (verify() leaves the image unusable) + re-encode.
-            with Image.open(io.BytesIO(data)) as source:
-                source.seek(0)  # first frame only for animated WebP/APNG
-                source.load()
-                icc_profile = source.info.get("icc_profile")
-                image = ImageOps.exif_transpose(source)
-                return self._encode(image, detected, icc_profile)
+            image, icc_profile = self._decode(data, detected)
+            thumbnail = make_preview(image) if preview else None
+            processed = self._encode(image, detected, icc_profile)
+            return replace(processed, preview=thumbnail)
+
+    def _verify(self, data: bytes, detected: ImageFormat) -> None:
+        with Image.open(io.BytesIO(data)) as probe:
+            if probe.format != detected.pillow_name:
+                raise InvalidImageError("The file content does not match its declared image type.")
+            width, height = probe.size
+            if width <= 0 or height <= 0:
+                raise InvalidImageError("The image has no pixels.")
+            if width * height > self.max_pixels:
+                raise InvalidImageError(
+                    f"The image is too large ({width}x{height} pixels). "
+                    f"Maximum is {self.max_pixels:,} pixels."
+                )
+            probe.verify()
+
+    def _decode(self, data: bytes, detected: ImageFormat) -> tuple[Image.Image, bytes | None]:
+        """Decode the first frame, upright and within ``max_dimension``."""
+        with Image.open(io.BytesIO(data)) as source:
+            source.seek(0)  # first frame only for animated WebP/APNG
+            if (target := self._fit(source.size)) is not None:
+                # JPEG only (no-op otherwise): libjpeg decodes at 1/2, 1/4 or 1/8
+                # scale, so a large photo never exists in memory at full size.
+                source.draft(None, target)
+            source.load()
+            icc_profile = source.info.get("icc_profile")
+            # In place: the copy-returning variant holds the pixels twice.
+            ImageOps.exif_transpose(source, in_place=True)
+        image = self._shrink(source)
+        if image is source and detected is WEBP:
+            # Pillow keeps libwebp's decoder, with two more full-size canvases, alive
+            # as long as the image object; a plain copy lets it go before encoding.
+            image = source.copy()
+        return image, icc_profile
+
+    def _fit(self, size: tuple[int, int]) -> tuple[int, int] | None:
+        """``size`` scaled down to fit ``max_dimension``, or ``None`` if it fits."""
+        longest = max(size)
+        if self.max_dimension is None or longest <= self.max_dimension:
+            return None
+        scale = self.max_dimension / longest
+        return max(1, round(size[0] * scale)), max(1, round(size[1] * scale))
+
+    def _shrink(self, image: Image.Image) -> Image.Image:
+        target = self._fit(image.size)
+        if target is None:
+            return image
+        if image.mode in ("1", "P") or "transparency" in image.info:
+            # Pillow resizes palette/bilevel images nearest-neighbour, and blending
+            # breaks colour-key transparency: switch to true colour first.
+            image = image.convert("RGBA" if image.has_transparency_data else "RGB")
+        return image.resize(target, Image.Resampling.LANCZOS, reducing_gap=3.0)
 
     def _encode(
         self, image: Image.Image, fmt: ImageFormat, icc_profile: bytes | None

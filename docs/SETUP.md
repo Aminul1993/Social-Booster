@@ -42,17 +42,26 @@ Edit `.env`:
 | `SESSION_SECRET` | the generated string (optional in development: a random one is generated per start, which logs you out on every restart) |
 | `OLLAMA_API_KEY` | your Ollama Cloud key (https://ollama.com/settings/keys) |
 | `OLLAMA_MODEL` | a model your account can use, e.g. `gpt-oss:120b` |
-| `BUFFER_CLIENT_ID` / `BUFFER_CLIENT_SECRET` | from your Buffer developer app |
-| `BUFFER_REDIRECT_URI` | `http://localhost:8000/buffer/callback` (must match the Buffer app) |
+| `BUFFER_CLIENT_ID` / `BUFFER_CLIENT_SECRET` | from your Buffer OAuth client (see below) |
+| `BUFFER_REDIRECT_URI` | your app's `https://.../buffer/callback`, exactly as registered with Buffer |
 | `PUBLIC_BASE_URL` | leave empty locally; see "Images on Buffer" below |
 
 All variables are documented in [ENVIRONMENT.md](ENVIRONMENT.md).
 
 ### Registering the Buffer app
 
-1. Sign in to Buffer and open the developer apps page (https://buffer.com/developers/apps).
-2. Create an app; set the callback URL to exactly `BUFFER_REDIRECT_URI`.
-3. Copy the client id and secret into `.env`.
+1. Sign in to Buffer and open **Settings -> API**
+   ([guide](https://developers.buffer.com/guides/building-apps.md)).
+2. Register an OAuth client of type **private** (the app keeps the secret on
+   its server) and add `BUFFER_REDIRECT_URI` as a redirect URI. Buffer compares
+   it character for character and requires `https`, even on localhost.
+3. Copy the client id and secret into `.env`. Leave `BUFFER_OAUTH_URL`,
+   `BUFFER_TOKEN_URL` and `BUFFER_API_URL` unset: the defaults are Buffer's
+   current endpoints. The old `bufferapp.com` v1 URLs answer these clients with
+   `invalid_client`.
+
+The app asks for `account:read posts:write offline_access`, uses PKCE, and
+renews Buffer's one-hour access tokens with the refresh token automatically.
 
 ### Images on Buffer
 
@@ -73,8 +82,8 @@ Open http://localhost:8000.
 
 ### Running without Ollama/Buffer accounts
 
-`scripts/mock_upstreams.py` imitates Ollama's chat endpoint and Buffer's OAuth,
-profile and update endpoints so you can try the complete flow offline:
+`scripts/mock_upstreams.py` imitates Ollama's chat endpoint and Buffer's OAuth
+(with PKCE) and GraphQL endpoints so you can try the complete flow offline:
 
 ```bash
 python scripts/mock_upstreams.py --port 8020
@@ -85,10 +94,9 @@ OLLAMA_ENDPOINT=http://127.0.0.1:8020/v1/chat/completions
 OLLAMA_API_KEY=mock
 BUFFER_CLIENT_ID=mock
 BUFFER_CLIENT_SECRET=mock
-BUFFER_OAUTH_URL=http://127.0.0.1:8020/oauth2/authorize
-BUFFER_TOKEN_URL=http://127.0.0.1:8020/1/oauth2/token.json
-BUFFER_PROFILES_URL=http://127.0.0.1:8020/1/profiles.json
-BUFFER_POST_URL=http://127.0.0.1:8020/1/updates/create.json
+BUFFER_OAUTH_URL=http://127.0.0.1:8020/auth
+BUFFER_TOKEN_URL=http://127.0.0.1:8020/token
+BUFFER_API_URL=http://127.0.0.1:8020/graphql
 ```
 
 Posts "sent" to the mock are listed at http://127.0.0.1:8020/posts.

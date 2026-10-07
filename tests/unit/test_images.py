@@ -11,6 +11,7 @@ from services.images import (
     WEBP,
     ImageProcessor,
     InvalidImageError,
+    make_preview,
     safe_display_name,
     sniff_format,
 )
@@ -134,6 +135,91 @@ class TestProcessing:
         assert (
             processor.process(webp_l.getvalue(), declared_content_type="image/webp").format is WEBP
         )
+
+
+class TestDownscaling:
+    @pytest.fixture
+    def shrinking(self) -> ImageProcessor:
+        return ImageProcessor(max_bytes=2 * 1024 * 1024, max_pixels=4_000_000, max_dimension=100)
+
+    @pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
+    def test_longer_side_is_capped(self, shrinking: ImageProcessor, fmt: str) -> None:
+        data = make_image(fmt, size=(300, 400))
+        result = shrinking.process(data, declared_content_type=None, preview=True)
+        assert (result.width, result.height) == (75, 100)
+        assert result.preview is not None
+        assert result.preview.size == (75, 100)
+        with Image.open(io.BytesIO(result.data)) as reopened:
+            assert reopened.size == (75, 100)
+
+    def test_small_images_keep_their_size(self, shrinking: ImageProcessor) -> None:
+        result = shrinking.process(make_image(size=(64, 48)), declared_content_type="image/png")
+        assert (result.width, result.height) == (64, 48)
+
+    def test_jpeg_is_never_decoded_at_full_size(
+        self, shrinking: ImageProcessor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        decoded: list[tuple[int, int]] = []
+        shrink = ImageProcessor._shrink
+
+        def spy(self: ImageProcessor, image: Image.Image) -> Image.Image:
+            decoded.append(image.size)
+            return shrink(self, image)
+
+        monkeypatch.setattr(ImageProcessor, "_shrink", spy)
+        result = shrinking.process(make_image("JPEG", size=(800, 400)), declared_content_type=None)
+        assert decoded == [(100, 50)]  # libjpeg scaled by 1/8 while decoding
+        assert (result.width, result.height) == (100, 50)
+
+    def test_exif_orientation_is_applied(self) -> None:
+        processor = ImageProcessor(max_bytes=1_000_000, max_pixels=1_000_000, max_dimension=10)
+        result = processor.process(_jpeg_with_exif(), declared_content_type="image/jpeg")
+        assert (result.width, result.height) == (5, 10)
+
+    def test_palette_transparency_survives(self, shrinking: ImageProcessor) -> None:
+        buffer = io.BytesIO()
+        Image.new("P", (400, 200)).save(buffer, format="PNG", transparency=0)
+        result = shrinking.process(buffer.getvalue(), declared_content_type="image/png")
+        with Image.open(io.BytesIO(result.data)) as reopened:
+            assert (reopened.mode, reopened.size) == ("RGBA", (100, 50))
+            assert reopened.getpixel((0, 0))[3] == 0
+
+    def test_opaque_palette_becomes_rgb(self, shrinking: ImageProcessor) -> None:
+        buffer = io.BytesIO()
+        Image.new("P", (400, 200)).save(buffer, format="PNG")
+        result = shrinking.process(buffer.getvalue(), declared_content_type="image/png")
+        with Image.open(io.BytesIO(result.data)) as reopened:
+            assert (reopened.mode, reopened.size) == ("RGB", (100, 50))
+
+    def test_constructor_validates_dimension(self) -> None:
+        with pytest.raises(ValueError, match="max_dimension"):
+            ImageProcessor(max_bytes=1, max_pixels=1, max_dimension=0)
+
+
+class TestPreview:
+    def test_only_made_on_request(self, processor: ImageProcessor) -> None:
+        assert processor.process(make_image(), declared_content_type="image/png").preview is None
+
+    @pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
+    def test_matches_stored_image(self, processor: ImageProcessor, fmt: str) -> None:
+        result = processor.process(make_image(fmt), declared_content_type=None, preview=True)
+        assert result.preview is not None
+        assert result.preview.mode == "RGB"
+        assert result.preview.size == (result.width, result.height)
+
+    def test_follows_exif_orientation(self, processor: ImageProcessor) -> None:
+        result = processor.process(_jpeg_with_exif(), declared_content_type=None, preview=True)
+        assert result.preview is not None
+        assert result.preview.size == (20, 40)
+
+    def test_downscales_to_short_side(self) -> None:
+        assert make_preview(Image.new("RGB", (2000, 1000)), size=100).size == (200, 100)
+        assert make_preview(Image.new("L", (300, 900)), size=100).size == (100, 300)
+
+    @pytest.mark.parametrize("mode", ["1", "P", "LA", "RGBA", "I;16"])
+    def test_any_mode_becomes_rgb(self, mode: str) -> None:
+        preview = make_preview(Image.new(mode, (40, 20)), size=10)
+        assert (preview.mode, preview.size) == ("RGB", (20, 10))
 
 
 class TestDisplayName:

@@ -12,7 +12,7 @@ from app.dependencies import Accounts, Container, CsrfProtected, Drafts, Publish
 from app.errors import OAuthStateError, toast_header
 from app.models import PublishRecord, ScheduleForm
 from app.rate_limit import rate_limit
-from app.security import add_flash, consume_oauth_state, issue_oauth_state
+from app.security import add_flash, consume_oauth_state, issue_oauth_state, pkce_verifier
 from app.validation import CopyEdit, validate_schedule
 from app.views import absolute_url, build_card, is_publicly_reachable, render_card
 from services.content import compose_post_text
@@ -35,16 +35,23 @@ def _home(request: Request) -> RedirectResponse:
     "/auth",
     dependencies=[Depends(rate_limit("auth"))],
     summary="Start Buffer OAuth",
-    description="Redirects to Buffer's consent screen with a session-bound `state`.",
+    description=(
+        "Redirects to Buffer's consent screen with a session-bound `state` and a PKCE "
+        "`code_challenge`."
+    ),
     response_class=RedirectResponse,
     status_code=303,
 )
-async def buffer_auth(request: Request, session_id: SessionId, accounts: Accounts) -> Response:
+async def buffer_auth(
+    request: Request, session_id: SessionId, accounts: Accounts, container: Container
+) -> Response:
     if not accounts.publisher.configured:
         add_flash(request, "danger", "Buffer is not configured on this server.")
         return _home(request)
     state = issue_oauth_state(request)
-    return RedirectResponse(accounts.publisher.authorization_url(state), status_code=303)
+    verifier = pkce_verifier(state, secret=container.settings.session_secret_value)
+    url = accounts.publisher.authorization_url(state, code_verifier=verifier)
+    return RedirectResponse(url, status_code=303)
 
 
 @router.get(
@@ -71,7 +78,7 @@ async def buffer_callback(
     events = container.metrics.oauth_events
     provider = accounts.provider
     try:
-        consume_oauth_state(request, state)
+        state = consume_oauth_state(request, state)
     except OAuthStateError as exc:
         logger.warning("OAuth state validation failed", extra={"provider": provider})
         events.labels(provider=provider, outcome="invalid_state").inc()
@@ -80,7 +87,7 @@ async def buffer_callback(
 
     if error:
         events.labels(provider=provider, outcome="denied").inc()
-        detail = (error_description or "").strip()[:200]
+        detail = (error_description or error).strip()[:200]
         add_flash(
             request,
             "warning",
@@ -92,8 +99,9 @@ async def buffer_callback(
         add_flash(request, "danger", "Buffer did not return an authorization code.")
         return _home(request)
 
+    verifier = pkce_verifier(state, secret=container.settings.session_secret_value)
     try:
-        await accounts.connect(session_id, code)
+        await accounts.connect(session_id, code, code_verifier=verifier)
     except PublisherError as exc:
         events.labels(provider=provider, outcome="exchange_failed").inc()
         logger.warning("OAuth code exchange failed", extra={"error": exc.message})
@@ -195,13 +203,15 @@ async def buffer_schedule(
         provider=accounts.provider, mode=valid.mode.value, outcome="success"
     ).inc()
 
-    names = [p.username for p in profiles if p.id in valid.profile_ids]
+    refused = dict(result.failures)
+    sent = [p for p in profiles if p.id in valid.profile_ids and p.id not in refused]
+    names = [p.username for p in sent]
     draft = await drafts.record_publish(
         draft,
         PublishRecord(
             provider=accounts.provider,
             mode=valid.mode,
-            profile_ids=list(valid.profile_ids),
+            profile_ids=[p.id for p in sent],
             profile_names=names,
             scheduled_at=valid.scheduled_at,
             update_ids=list(result.update_ids),
@@ -217,6 +227,11 @@ async def buffer_schedule(
     else:
         message = f"Shared now on {targets}."
     level: str = "success"
+    if refused:
+        level = "warning"
+        by_id = {p.id: p.username for p in profiles}
+        reasons = "; ".join(f"{by_id.get(pid, pid)}: {reason}" for pid, reason in refused.items())
+        message += f" Not sent to {reasons}"
     if not is_publicly_reachable(media_url):
         level = "warning"
         message += (

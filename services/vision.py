@@ -223,8 +223,12 @@ class VisionService:
         return loop.run_in_executor(self._executor, func, *args)
 
     # --------------------------------------------------------------- inference
-    async def classify(self, image_bytes: bytes) -> list[VisionLabel]:
+    async def classify(self, image: Image.Image | bytes) -> list[VisionLabel]:
         """Return the top-k labels for an (already validated) image.
+
+        Prefer passing a small decoded image (see :func:`services.images.make_preview`):
+        decoding full-size bytes here costs ~4 bytes per pixel for a model that
+        only looks at 224x224.
 
         Raises:
             VisionError: when the model is unavailable, times out or fails.
@@ -235,7 +239,7 @@ class VisionService:
         async with self._semaphore:
             try:
                 return await asyncio.wait_for(
-                    self._run(self._infer, classifier, image_bytes),
+                    self._run(self._infer, classifier, image),
                     timeout=self.config.timeout_seconds,
                 )
             except TimeoutError as exc:
@@ -246,10 +250,12 @@ class VisionService:
                 logger.exception("Vision inference failed")
                 raise VisionError("Image analysis failed.") from exc
 
-    def _infer(self, classifier: ImageClassifier, image_bytes: bytes) -> list[VisionLabel]:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            image.load()
-            predictions = classifier.predict(image, self.config.top_k)
+    def _infer(self, classifier: ImageClassifier, image: Image.Image | bytes) -> list[VisionLabel]:
+        if isinstance(image, bytes):
+            with Image.open(io.BytesIO(image)) as opened:
+                opened.load()
+                return self._infer(classifier, opened)
+        predictions = classifier.predict(image, self.config.top_k)
         labels: list[VisionLabel] = []
         seen: set[str] = set()
         for prediction in predictions:

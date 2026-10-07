@@ -33,6 +33,7 @@ pages and toasts for unexpected errors show the same id as "Reference".
 | "The file content does not match its declared image type." | Renamed file (e.g. PNG named `.jpg`) | Re-export the image properly. |
 | "larger than 10 MB" / 413 | `MAX_UPLOAD_SIZE_MB` / proxy body limit | Raise the setting **and** the proxy's limit (`client_max_body_size`, Caddy `request_body max_size`). |
 | "The image is too large (W x H pixels)" | Above `MAX_IMAGE_PIXELS` | Downscale or raise the limit (memory grows with pixels). |
+| Worker memory jumps during uploads / OOM kills | Large PNG/WebP files must be decoded at full size (40 MP PNG ~+360 MB, 40 MP WebP ~+620 MB; JPEGs stay under ~+90 MB) on top of the ~450 MB a worker needs for ResNet-50 | Lower `MAX_IMAGE_PIXELS` (e.g. `16000000`), keep `IMAGE_MAX_CONCURRENCY=1` and `IMAGE_MAX_DIMENSION` set, or set `VISION_BACKEND=disabled`. Outside Docker, also set `MALLOC_MMAP_THRESHOLD_=1048576` so freed images go back to the OS. |
 | Strange labels | ResNet-50 knows the 1,000 ImageNet classes only | Edit the keywords before generating; they steer the AI. |
 
 ## AI generation (Ollama Cloud)
@@ -51,6 +52,7 @@ pages and toasts for unexpected errors show the same id as "Reference".
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `invalid_client` when connecting Buffer | The client was registered under Buffer's Settings -> API, but `BUFFER_OAUTH_URL`/`BUFFER_TOKEN_URL` still point at the retired `bufferapp.com` v1 endpoints (the app logs a warning at start-up), or the id/secret are wrong | Unset `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_PROFILES_URL`, `BUFFER_POST_URL` (defaults: `auth.buffer.com`, `api.buffer.com`) and re-check `BUFFER_CLIENT_ID`/`BUFFER_CLIENT_SECRET`. |
 | Buffer shows "redirect_uri mismatch" | `BUFFER_REDIRECT_URI` differs from the app registration | Make them identical, including scheme, host, port and path. |
 | "The authorization response could not be verified" | Callback opened in another browser, after > 10 minutes, or twice | Click "Connect Buffer" again in the same browser. |
 | "Buffer rejected the authorization code" | Code already used/expired, wrong client secret | Reconnect; check `BUFFER_CLIENT_SECRET`. |

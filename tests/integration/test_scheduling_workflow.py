@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,14 +14,12 @@ from app.models import DraftStatus
 from services.publishing import PublishMode
 from tests.conftest import AppFactory
 from tests.helpers import (
-    BUFFER_POST_URL,
-    BUFFER_PROFILES_URL,
+    BUFFER_API_URL,
     BUFFER_TOKEN_URL,
     GOOD_COPY,
     OLLAMA_URL,
-    PROFILES_PAYLOAD,
     AppClient,
-    form_body,
+    FakeBufferAPI,
     make_client,
     ollama_reply,
     toast,
@@ -33,13 +32,12 @@ def future_local(hours: int = 48) -> str:
     return (datetime.now(UTC) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
 
 
-def mock_services(router: respx.MockRouter) -> respx.Route:
+def mock_services(router: respx.MockRouter) -> FakeBufferAPI:
     router.post(OLLAMA_URL).respond(json=ollama_reply(GOOD_COPY))
     router.post(BUFFER_TOKEN_URL).respond(json={"access_token": "1/tok"})
-    router.get(BUFFER_PROFILES_URL).respond(json=PROFILES_PAYLOAD)
-    return router.post(BUFFER_POST_URL).respond(
-        json={"success": True, "updates": [{"id": "upd-1"}, {"id": "upd-2"}]}
-    )
+    api = FakeBufferAPI()
+    router.post(BUFFER_API_URL).mock(side_effect=api)
+    return api
 
 
 async def prepare(client: AppClient, *, connect: bool = True) -> str:
@@ -67,8 +65,13 @@ def schedule_form(draft_id: str, **overrides: Any) -> dict[str, Any]:
     return values
 
 
+def image_url(post: dict[str, Any]) -> str:
+    url: str = post["assets"][0]["image"]["url"]
+    return url
+
+
 async def test_schedule_end_to_end(client: AppClient, mock_http: respx.MockRouter) -> None:
-    post_route = mock_services(mock_http)
+    api = mock_services(mock_http)
     draft_id = await prepare(client)
 
     # The generated card now offers profile selection.
@@ -88,16 +91,19 @@ async def test_schedule_end_to_end(client: AppClient, mock_http: respx.MockRoute
     assert "scheduled for" in html
     assert "@acme, acme" in html
 
-    body = form_body(post_route.calls.last.request)
-    assert body["profile_ids[]"] == ["prof-ig", "prof-x"]
-    assert body["text"] == ["Edited caption for Buffer\n\n#dogs #puppy"]
-    media = body["media[photo]"][0]
-    assert media.startswith("https://social.example.com/uploads/")
-    assert media.endswith(".png")
-    assert body["media[thumbnail]"] == [media]
+    # One createPost mutation per channel, with the same content.
+    assert [post["channelId"] for post in api.posts] == ["prof-ig", "prof-x"]
     expected_utc = datetime.fromisoformat(when).replace(tzinfo=_tz("Asia/Dhaka")).astimezone(UTC)
-    assert body["scheduled_at"] == [expected_utc.strftime("%Y-%m-%dT%H:%M:%SZ")]
-    assert post_route.calls.last.request.headers["Authorization"] == "Bearer 1/tok"
+    for post in api.posts:
+        assert post["text"] == "Edited caption for Buffer\n\n#dogs #puppy"
+        assert post["mode"] == "customScheduled"
+        assert post["schedulingType"] == "automatic"
+        assert post["dueAt"] == expected_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert image_url(post).startswith("https://social.example.com/uploads/")
+        assert image_url(post).endswith(".png")
+    mutation = api.requests[-1]
+    assert "createPost" in json.loads(mutation.content)["query"]
+    assert mutation.headers["Authorization"] == "Bearer 1/tok"
 
     assert "already sent to Buffer. Send it again?" in html  # guards accidental re-posts
 
@@ -106,7 +112,7 @@ async def test_schedule_end_to_end(client: AppClient, mock_http: respx.MockRoute
     assert draft.caption == "Edited caption for Buffer"
     assert draft.hashtags == ["#dogs", "#puppy"]
     assert draft.publish is not None
-    assert draft.publish.update_ids == ["upd-1", "upd-2"]
+    assert draft.publish.update_ids == ["post-1", "post-2"]
     assert draft.publish.scheduled_at == expected_utc
     assert draft.publish.profile_names == ["@acme", "acme"]
 
@@ -118,10 +124,10 @@ async def test_schedule_end_to_end(client: AppClient, mock_http: respx.MockRoute
 
 
 @pytest.mark.parametrize(
-    ("mode", "message", "field"),
+    ("mode", "message", "share_mode"),
     [
-        (PublishMode.QUEUE, "Added to the Buffer queue", None),
-        (PublishMode.NOW, "Shared now", "now"),
+        (PublishMode.QUEUE, "Added to the Buffer queue", "addToQueue"),
+        (PublishMode.NOW, "Shared now", "shareNow"),
     ],
 )
 async def test_queue_and_now_modes(
@@ -129,9 +135,9 @@ async def test_queue_and_now_modes(
     mock_http: respx.MockRouter,
     mode: PublishMode,
     message: str,
-    field: str | None,
+    share_mode: str,
 ) -> None:
-    post_route = mock_services(mock_http)
+    api = mock_services(mock_http)
     draft_id = await prepare(client)
     response = await client.post(
         "/buffer/schedule",
@@ -139,15 +145,33 @@ async def test_queue_and_now_modes(
     )
     assert response.status_code == 200
     assert message in toast(response)["message"]
-    body = form_body(post_route.calls.last.request)
-    assert "scheduled_at" not in body
-    assert ("now" in body) is (field == "now")
+    (post,) = api.posts
+    assert post["mode"] == share_mode
+    assert "dueAt" not in post
+
+
+async def test_partial_refusal_is_reported(client: AppClient, mock_http: respx.MockRouter) -> None:
+    api = mock_services(mock_http)
+    api.refusals["prof-x"] = "Text is too long for X"
+    draft_id = await prepare(client)
+    response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
+    assert response.status_code == 200
+    message = toast(response)
+    assert message["level"] == "warning"
+    assert "Scheduled on 1 profile " in message["message"]
+    assert (
+        "Not sent to acme: Buffer refused the post: Text is too long for X." in message["message"]
+    )
+    draft = await client.container.drafts.get(client.session_id, draft_id)
+    assert draft.publish is not None
+    assert draft.publish.profile_ids == ["prof-ig"]
+    assert draft.publish.profile_names == ["@acme"]
 
 
 async def test_validation_errors_render_inline(
     client: AppClient, mock_http: respx.MockRouter
 ) -> None:
-    post_route = mock_services(mock_http)
+    api = mock_services(mock_http)
     draft_id = await prepare(client)
     response = await client.post(
         "/buffer/schedule",
@@ -165,18 +189,18 @@ async def test_validation_errors_render_inline(
     assert "at least one minute in the future" in html
     assert "Keep my text</textarea>" in html  # user input preserved
     assert 'value="2001-01-01T10:00"' in html
-    assert post_route.call_count == 0
+    assert api.post_attempts == 0
 
 
 async def test_unknown_profile_rejected(client: AppClient, mock_http: respx.MockRouter) -> None:
-    post_route = mock_services(mock_http)
+    api = mock_services(mock_http)
     draft_id = await prepare(client)
     response = await client.post(
         "/buffer/schedule", data=schedule_form(draft_id, profile_ids=["someone-else"])
     )
     assert response.status_code == 422
     assert "no longer available" in response.text
-    assert post_route.call_count == 0
+    assert api.post_attempts == 0
 
 
 async def test_requires_connection(client: AppClient, mock_http: respx.MockRouter) -> None:
@@ -199,10 +223,8 @@ async def test_requires_configuration(app_factory: AppFactory) -> None:
 
 
 async def test_buffer_rejects_post(client: AppClient, mock_http: respx.MockRouter) -> None:
-    mock_services(mock_http)
-    mock_http.post(BUFFER_POST_URL).respond(
-        400, json={"success": False, "message": "Text too long"}
-    )
+    api = mock_services(mock_http)
+    api.refusals.update({"prof-ig": "Text too long", "prof-x": "Text too long"})
     draft_id = await prepare(client)
     response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
     assert response.status_code == 502
@@ -215,8 +237,14 @@ async def test_buffer_rejects_post(client: AppClient, mock_http: respx.MockRoute
 
 
 async def test_revoked_token_during_publish(client: AppClient, mock_http: respx.MockRouter) -> None:
-    mock_services(mock_http)
-    mock_http.post(BUFFER_POST_URL).respond(401)
+    api = mock_services(mock_http)
+
+    def revoked_on_post(request: httpx.Request) -> httpx.Response:
+        if b"createPost" in request.content:
+            return httpx.Response(401)
+        return api(request)
+
+    mock_http.post(BUFFER_API_URL).mock(side_effect=revoked_on_post)
     draft_id = await prepare(client)
     response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
     assert response.status_code == 401
@@ -232,7 +260,7 @@ async def test_buffer_outage_while_loading_profiles(
     mock_services(mock_http)
     draft_id = await prepare(client)
     client.container.accounts._cache.clear()
-    mock_http.get(BUFFER_PROFILES_URL).mock(side_effect=httpx.ConnectError("down"))
+    mock_http.post(BUFFER_API_URL).mock(side_effect=httpx.ConnectError("down"))
     response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
     assert response.status_code == 503
     assert "Could not reach Buffer" in toast(response)["message"]
@@ -241,15 +269,14 @@ async def test_buffer_outage_while_loading_profiles(
 async def test_local_image_url_warning(app_factory: AppFactory) -> None:
     app = app_factory(public_base_url=None)
     with respx.mock(assert_all_called=False) as router:
-        post_route = mock_services(router)
+        api = mock_services(router)
         async with make_client(app) as client:
             draft_id = await prepare(client)
             response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
     assert response.status_code == 200
     assert toast(response)["level"] == "warning"
     assert "PUBLIC_BASE_URL" in toast(response)["message"]
-    media = form_body(post_route.calls.last.request)["media[photo]"][0]
-    assert media.startswith("http://testserver/uploads/")
+    assert image_url(api.posts[0]).startswith("http://testserver/uploads/")
 
 
 def _tz(name: str) -> Any:

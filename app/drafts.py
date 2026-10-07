@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from fastapi import UploadFile
+from PIL import Image
 
 from app.errors import BadRequestError, NotFoundError
 from app.metrics import AppMetrics
@@ -25,6 +26,7 @@ from services.errors import OllamaError, StorageError, VisionError
 from services.images import (
     ImageProcessor,
     InvalidImageError,
+    ProcessedImage,
     format_megabytes,
     safe_display_name,
 )
@@ -41,6 +43,8 @@ class DraftLimits:
     max_upload_bytes: int
     max_files_per_upload: int
     max_drafts_per_session: int
+    #: Images decoded at once per process; each needs ~4 bytes per pixel.
+    max_concurrent_images: int = 1
     caption_max_chars: int = 150
     hashtags_min: int = 5
     hashtags_max: int = 8
@@ -75,6 +79,8 @@ class DraftService:
         self._ollama = ollama
         self._metrics = metrics
         self.limits = limits
+        # Shared by all requests of this worker, not per upload batch.
+        self._decoding = asyncio.Semaphore(limits.max_concurrent_images)
 
     # ------------------------------------------------------------------ queries
     async def list_for_session(self, session_id: str) -> list[Draft]:
@@ -133,19 +139,13 @@ class DraftService:
         return outcome
 
     async def _ingest(self, session_id: str, upload: UploadFile) -> Draft:
-        try:
-            raw = await read_upload(upload, max_bytes=self.limits.max_upload_bytes)
-        finally:
-            await upload.close()
-        processed = await asyncio.to_thread(
-            self._processor.process, raw, declared_content_type=upload.content_type
-        )
+        processed = await self._process(upload)
         stored = await self._storage.save(
             processed.data,
             extension=processed.format.extension,
             content_type=processed.format.content_type,
         )
-        labels, vision_error = await self._tag(processed.data)
+        labels, vision_error = await self._tag(processed.preview)
         draft = Draft(
             session_id=session_id,
             image_key=stored.key,
@@ -169,12 +169,30 @@ class DraftService:
         )
         return draft
 
-    async def _tag(self, data: bytes) -> tuple[list[Label], str | None]:
-        if not self._vision.enabled:
+    async def _process(self, upload: UploadFile) -> ProcessedImage:
+        """Read and sanitise one upload while holding a decoding slot.
+
+        Files waiting for a slot stay spooled on disk, so peak memory is bounded
+        by ``max_concurrent_images`` rather than by the size of the batch.
+        """
+        async with self._decoding:
+            try:
+                raw = await read_upload(upload, max_bytes=self.limits.max_upload_bytes)
+            finally:
+                await upload.close()
+            return await asyncio.to_thread(
+                self._processor.process,
+                raw,
+                declared_content_type=upload.content_type,
+                preview=self._vision.enabled,
+            )
+
+    async def _tag(self, preview: Image.Image | None) -> tuple[list[Label], str | None]:
+        if preview is None or not self._vision.enabled:
             return [], None
         started = time.perf_counter()
         try:
-            results = await self._vision.classify(data)
+            results = await self._vision.classify(preview)
         except VisionError as exc:
             self._metrics.vision_failures.inc()
             logger.warning("Image tagging failed", extra={"error": exc.message})

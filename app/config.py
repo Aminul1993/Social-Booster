@@ -22,10 +22,11 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from services.buffer import (
+    DEFAULT_API_URL,
     DEFAULT_OAUTH_URL,
-    DEFAULT_POST_URL,
-    DEFAULT_PROFILES_URL,
+    DEFAULT_SCOPE,
     DEFAULT_TOKEN_URL,
+    is_legacy_url,
 )
 from services.ollama import DEFAULT_ENDPOINT, DEFAULT_MODEL
 
@@ -116,6 +117,8 @@ class Settings(BaseSettings):
     max_files_per_upload: int = Field(default=10, ge=1, le=50)
     max_image_pixels: int = Field(default=40_000_000, ge=1_000_000)
     image_quality: int = Field(default=90, ge=50, le=100)
+    image_max_dimension: int = Field(default=2048, ge=0, le=16384)  # 0 = keep original size
+    image_max_concurrency: int = Field(default=1, ge=1, le=16)
 
     # ------------------------------------------------------------------- vision
     vision_backend: Literal["resnet50", "disabled"] = "resnet50"
@@ -145,9 +148,8 @@ class Settings(BaseSettings):
     buffer_redirect_uri: str = "http://localhost:8000/buffer/callback"
     buffer_oauth_url: str = DEFAULT_OAUTH_URL
     buffer_token_url: str = DEFAULT_TOKEN_URL
-    buffer_profiles_url: str = DEFAULT_PROFILES_URL
-    buffer_post_url: str = DEFAULT_POST_URL
-    buffer_scope: str | None = None
+    buffer_api_url: str = DEFAULT_API_URL
+    buffer_scope: str = DEFAULT_SCOPE
     buffer_timeout_seconds: float = Field(default=20.0, gt=0)
     buffer_max_retries: int = Field(default=3, ge=1, le=10)
     buffer_profiles_cache_seconds: int = Field(default=300, ge=0)
@@ -174,7 +176,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "buffer_client_id",
-        "buffer_scope",
         "public_base_url",
         "ollama_api_key",
         "buffer_client_secret",
@@ -231,6 +232,18 @@ class Settings(BaseSettings):
         elif self.session_secret is None:
             # Development convenience: an ephemeral secret (sessions reset on restart).
             self.session_secret = SecretStr(secrets.token_urlsafe(48))
+        legacy = [
+            name.upper()
+            for name in ("buffer_oauth_url", "buffer_token_url", "buffer_api_url")
+            if is_legacy_url(getattr(self, name))
+        ]
+        if legacy:
+            logger.warning(
+                "%s point at Buffer's retired v1 API (bufferapp.com), which answers clients "
+                "from Buffer's Settings -> API with invalid_client; unset them to use the "
+                "defaults",
+                ", ".join(legacy),
+            )
         return self
 
     # =============================================================== properties

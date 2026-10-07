@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,12 +32,25 @@ class FakePublisher:
         self.profile_calls = 0
         self.profile_error: Exception | None = None
         self.publish_error: Exception | None = None
+        self.refresh_error: Exception | None = None
+        self.refreshes: list[str | None] = []
 
-    def authorization_url(self, state: str) -> str:
+    def authorization_url(self, state: str, *, code_verifier: str) -> str:
         return f"https://fake/auth?state={state}"
 
-    async def exchange_code(self, code: str) -> OAuthToken:
+    async def exchange_code(self, code: str, *, code_verifier: str) -> OAuthToken:
         return OAuthToken(access_token=f"token-for-{code}")
+
+    async def refresh(self, token: OAuthToken) -> OAuthToken:
+        self.refreshes.append(token.refresh_token)
+        await asyncio.sleep(0)  # let concurrent callers interleave
+        if self.refresh_error:
+            raise self.refresh_error
+        return OAuthToken(
+            access_token=f"renewed-{len(self.refreshes)}",
+            refresh_token=f"r{len(self.refreshes) + 1}",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
 
     async def list_profiles(self, token: OAuthToken) -> list[PublishingProfile]:
         self.profile_calls += 1
@@ -85,7 +99,7 @@ def accounts(publisher: FakePublisher, tokens: TokenRepository, clock: Clock) ->
 
 async def test_connect_status_and_disconnect(accounts: PublisherAccounts) -> None:
     assert (await accounts.status("s")).connected is False
-    token = await accounts.connect("s", "abc")
+    token = await accounts.connect("s", "abc", code_verifier="v")
     assert token.access_token == "token-for-abc"
     status = await accounts.status("s")
     assert status.connected
@@ -99,7 +113,7 @@ async def test_connect_status_and_disconnect(accounts: PublisherAccounts) -> Non
 async def test_profiles_are_cached_with_ttl(
     accounts: PublisherAccounts, publisher: FakePublisher, clock: Clock
 ) -> None:
-    token = await accounts.connect("s", "abc")
+    token = await accounts.connect("s", "abc", code_verifier="v")
     await accounts.profiles("s", token)
     await accounts.profiles("s", token)
     assert publisher.profile_calls == 1
@@ -129,7 +143,7 @@ async def test_cache_disabled(publisher: FakePublisher, tokens: TokenRepository)
 async def test_auth_error_disconnects(
     accounts: PublisherAccounts, publisher: FakePublisher
 ) -> None:
-    await accounts.connect("s", "abc")
+    await accounts.connect("s", "abc", code_verifier="v")
     publisher.profile_error = PublisherAuthError("revoked")
     status = await accounts.status("s")
     assert not status.connected
@@ -140,7 +154,7 @@ async def test_auth_error_disconnects(
 async def test_outage_is_reported_not_raised(
     accounts: PublisherAccounts, publisher: FakePublisher
 ) -> None:
-    await accounts.connect("s", "abc")
+    await accounts.connect("s", "abc", code_verifier="v")
     publisher.profile_error = PublisherError("Buffer is down")
     status = await accounts.status("s")
     assert status.connected
@@ -155,11 +169,10 @@ async def test_not_configured(accounts: PublisherAccounts, publisher: FakePublis
     assert not status.connected
 
 
-async def test_expired_token_is_dropped(
+async def test_expired_token_without_refresh_token_is_dropped(
     accounts: PublisherAccounts, tokens: TokenRepository
 ) -> None:
-    expired = OAuthToken(access_token="t", expires_at=datetime.now(UTC) - timedelta(minutes=5))
-    await tokens.save("s", "fake", expired)
+    await tokens.save("s", "fake", expired(refresh_token=None))
     assert await accounts.token("s") is None
     assert await tokens.get("s", "fake") is None
 
@@ -167,7 +180,7 @@ async def test_expired_token_is_dropped(
 async def test_publish_and_auth_failure(
     accounts: PublisherAccounts, publisher: FakePublisher
 ) -> None:
-    token = await accounts.connect("s", "abc")
+    token = await accounts.connect("s", "abc", code_verifier="v")
     post = PostRequest(profile_ids=("p1",), text="hi", mode=PublishMode.NOW)
     assert (await accounts.publish("s", token, post)).update_ids == ("u1",)
 
@@ -185,8 +198,60 @@ async def test_publish_and_auth_failure(
 async def test_profiles_auth_error_raises_and_disconnects(
     accounts: PublisherAccounts, publisher: FakePublisher
 ) -> None:
-    token = await accounts.connect("s", "abc")
+    token = await accounts.connect("s", "abc", code_verifier="v")
     publisher.profile_error = PublisherAuthError("revoked")
     with pytest.raises(PublisherAuthError):
         await accounts.profiles("s", token)
     assert await accounts.token("s") is None
+
+
+def expired(refresh_token: str | None = "r1") -> OAuthToken:  # noqa: S107 - test value
+    return OAuthToken(
+        access_token="old",
+        refresh_token=refresh_token,
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+
+async def test_expired_token_is_refreshed_and_stored(
+    accounts: PublisherAccounts, publisher: FakePublisher, tokens: TokenRepository
+) -> None:
+    await tokens.save("s", "fake", expired())
+    token = await accounts.token("s")
+    assert token is not None
+    assert (token.access_token, token.refresh_token) == ("renewed-1", "r2")
+    assert publisher.refreshes == ["r1"]
+    assert await tokens.get("s", "fake") == token
+    assert await accounts.token("s") == token  # still fresh: no second refresh
+    assert publisher.refreshes == ["r1"]
+
+
+async def test_concurrent_requests_refresh_once(
+    accounts: PublisherAccounts, publisher: FakePublisher, tokens: TokenRepository
+) -> None:
+    await tokens.save("s", "fake", expired())
+    results = await asyncio.gather(*(accounts.token("s") for _ in range(5)))
+    assert publisher.refreshes == ["r1"]  # reusing r1 would revoke the whole grant
+    assert {token.access_token for token in results if token} == {"renewed-1"}
+
+
+async def test_rejected_refresh_disconnects(
+    accounts: PublisherAccounts, publisher: FakePublisher, tokens: TokenRepository
+) -> None:
+    await tokens.save("s", "fake", expired())
+    publisher.refresh_error = PublisherAuthError("expired")
+    assert await accounts.token("s") is None
+    assert await tokens.get("s", "fake") is None
+
+
+async def test_refresh_outage_is_reported(
+    accounts: PublisherAccounts, publisher: FakePublisher, tokens: TokenRepository
+) -> None:
+    await tokens.save("s", "fake", expired())
+    publisher.refresh_error = PublisherError("Could not reach Buffer.")
+    with pytest.raises(PublisherError):
+        await accounts.token("s")
+    status = await accounts.status("s")
+    assert status.connected
+    assert status.error == "Could not reach Buffer."
+    assert await tokens.get("s", "fake") is not None  # kept for the next attempt

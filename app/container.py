@@ -127,6 +127,7 @@ def build_container(
         max_bytes=settings.max_upload_bytes,
         max_pixels=settings.max_image_pixels,
         quality=settings.image_quality,
+        max_dimension=settings.image_max_dimension or None,
     )
     vision = VisionService(
         VisionConfig(
@@ -160,8 +161,7 @@ def build_container(
             redirect_uri=settings.buffer_redirect_uri,
             oauth_url=settings.buffer_oauth_url,
             token_url=settings.buffer_token_url,
-            profiles_url=settings.buffer_profiles_url,
-            post_url=settings.buffer_post_url,
+            api_url=settings.buffer_api_url,
             scope=settings.buffer_scope,
             timeout_seconds=settings.buffer_timeout_seconds,
             retry=RetryPolicy(max_attempts=settings.buffer_max_retries),
@@ -187,6 +187,7 @@ def build_container(
             max_upload_bytes=settings.max_upload_bytes,
             max_files_per_upload=settings.max_files_per_upload,
             max_drafts_per_session=settings.max_drafts_per_session,
+            max_concurrent_images=settings.image_max_concurrency,
             caption_max_chars=settings.caption_max_chars,
             hashtags_min=settings.hashtags_min,
             hashtags_max=settings.hashtags_max,

@@ -86,7 +86,7 @@ On Windows servers use `uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | Resource | Guidance |
 |---|---|
-| Memory | ~400 MB per worker (PyTorch + ResNet-50) + ~100 MB base. 2 workers -> ~1 GB; compose limit is 3 GB. |
+| Memory | ~400 MB per worker (PyTorch + ResNet-50) + ~100 MB base. 2 workers -> ~1 GB; compose limit is 3 GB. Uploads add memory per worker while an image is processed (`IMAGE_MAX_CONCURRENCY` images at a time): ~+90 MB for JPEGs of any size (decoded at reduced scale down to `IMAGE_MAX_DIMENSION`), ~4-8 bytes per pixel for PNG (~+360 MB for 40 MP with transparency) and ~16 for WebP (~+620 MB for 40 MP). Size `MAX_IMAGE_PIXELS` to fit. |
 | CPU | One ResNet-50 inference ~0.1-0.3 s per core. Keep `WEB_CONCURRENCY x VISION_NUM_THREADS` <= cores. |
 | Disk | Image ~1.8 GB. Uploads: up to `MAX_UPLOAD_SIZE_MB` per draft, purged after `DRAFT_RETENTION_HOURS`. |
 | Start-up | The model loads in the background (~3 s); `/health` is live immediately, `/health/ready` reports `vision: loading` until done. |

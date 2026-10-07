@@ -19,20 +19,69 @@ from PIL import Image
 from services.vision import VisionLabel
 
 OLLAMA_URL = "https://ollama.test/v1/chat/completions"
-BUFFER_OAUTH_URL = "https://buffer.test/oauth2/authorize"
-BUFFER_TOKEN_URL = "https://api.buffer.test/1/oauth2/token.json"
-BUFFER_PROFILES_URL = "https://api.buffer.test/1/profiles.json"
-BUFFER_POST_URL = "https://api.buffer.test/1/updates/create.json"
+BUFFER_OAUTH_URL = "https://auth.buffer.test/auth"
+BUFFER_TOKEN_URL = "https://auth.buffer.test/token"
+BUFFER_API_URL = "https://api.buffer.test/graphql"
 
-PROFILES_PAYLOAD: list[dict[str, Any]] = [
+CHANNELS_PAYLOAD: list[dict[str, Any]] = [
     {
         "id": "prof-ig",
         "service": "instagram",
-        "formatted_username": "@acme",
-        "avatar_https": "https://cdn.buffer.test/a.png",
+        "name": "acme_ig",
+        "displayName": "@acme",
+        "avatar": "https://cdn.buffer.test/a.png",
+        "isDisconnected": False,
+        "isLocked": False,
     },
-    {"id": "prof-x", "service": "twitter", "service_username": "acme"},
+    {
+        "id": "prof-x",
+        "service": "twitter",
+        "name": "acme",
+        "displayName": None,
+        "avatar": "",
+        "isDisconnected": False,
+        "isLocked": False,
+    },
 ]
+
+
+class FakeBufferAPI:
+    """Stand-in for Buffer's GraphQL endpoint, used as a respx side effect."""
+
+    def __init__(
+        self,
+        channels: list[dict[str, Any]] | None = None,
+        organizations: tuple[str, ...] = ("org-1",),
+    ) -> None:
+        self.channels = CHANNELS_PAYLOAD if channels is None else channels
+        self.organizations = organizations
+        self.posts: list[dict[str, Any]] = []  # createPost inputs that succeeded
+        self.refusals: dict[str, str] = {}  # channelId -> MutationError message
+        self.requests: list[httpx.Request] = []
+        self.post_attempts = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        body = json.loads(request.content)
+        query: str = body["query"]
+        variables: dict[str, Any] = body.get("variables") or {}
+        if "createPost" in query:
+            self.post_attempts += 1
+            values = variables["input"]
+            if message := self.refusals.get(values["channelId"]):
+                result: dict[str, Any] = {"__typename": "InvalidInputError", "message": message}
+            else:
+                self.posts.append(values)
+                post = {"id": f"post-{len(self.posts)}"}
+                result = {"__typename": "PostActionSuccess", "post": post}
+            return httpx.Response(200, json={"data": {"createPost": result}})
+        if "channels(" in query:
+            return httpx.Response(200, json={"data": {"channels": self.channels}})
+        if "organizations" in query:
+            orgs = [{"id": org} for org in self.organizations]
+            return httpx.Response(200, json={"data": {"account": {"organizations": orgs}}})
+        return httpx.Response(200, json={"errors": [{"message": f"Unknown query: {query}"}]})
+
 
 _CSRF_RE = re.compile(r'"X-CSRF-Token": "([^"]+)"')
 

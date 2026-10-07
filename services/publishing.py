@@ -115,10 +115,12 @@ class PostRequest:
 
 @dataclass(frozen=True, slots=True)
 class PublishResult:
-    """Provider response for a successful publish call."""
+    """Provider response for a (at least partly) successful publish call."""
 
     update_ids: tuple[str, ...]
     message: str | None = None
+    #: ``(profile_id, reason)`` for profiles the provider refused while others succeeded.
+    failures: tuple[tuple[str, str], ...] = ()
 
 
 @runtime_checkable
@@ -133,12 +135,16 @@ class SocialPublisher(Protocol):
         """Whether OAuth client credentials are present."""
         ...
 
-    def authorization_url(self, state: str) -> str:
-        """URL of the provider's consent screen."""
+    def authorization_url(self, state: str, *, code_verifier: str) -> str:
+        """URL of the provider's consent screen (PKCE challenge from ``code_verifier``)."""
         ...
 
-    async def exchange_code(self, code: str) -> OAuthToken:
+    async def exchange_code(self, code: str, *, code_verifier: str) -> OAuthToken:
         """Exchange an authorization code for an access token."""
+        ...
+
+    async def refresh(self, token: OAuthToken) -> OAuthToken:
+        """Renew an expired access token with its refresh token."""
         ...
 
     async def list_profiles(self, token: OAuthToken) -> list[PublishingProfile]:

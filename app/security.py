@@ -17,6 +17,8 @@ with Fernet (AES-128-CBC + HMAC-SHA256) and stored server-side keyed by ``sid``.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import secrets
 import time
 from typing import Any, Literal
@@ -86,8 +88,18 @@ def issue_oauth_state(request: Request) -> str:
     return state
 
 
-def consume_oauth_state(request: Request, received: str | None) -> None:
-    """Validate the ``state`` returned by the provider; always single-use.
+def pkce_verifier(state: str, *, secret: str) -> str:
+    """PKCE ``code_verifier`` (RFC 7636) belonging to an OAuth ``state``.
+
+    Derived with HMAC from the server secret, so it is never stored, never sent
+    to the browser and cannot be computed from the (public) state.
+    """
+    digest = hmac.new(secret.encode(), b"oauth-pkce:" + state.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def consume_oauth_state(request: Request, received: str | None) -> str:
+    """Validate the ``state`` returned by the provider (always single-use) and return it.
 
     Raises:
         OAuthStateError: missing, expired or mismatching state (CSRF / replay).
@@ -103,6 +115,7 @@ def consume_oauth_state(request: Request, received: str | None) -> None:
         raise OAuthStateError("The authorization request expired. Please connect again.")
     if not secrets.compare_digest(value, received):
         raise OAuthStateError()
+    return received
 
 
 # ---------------------------------------------------------------------------- flashes
