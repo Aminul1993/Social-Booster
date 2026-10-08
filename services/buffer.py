@@ -1,41 +1,33 @@
-"""Buffer integration: OAuth 2 (authorization code + PKCE), channels and posting.
+"""Buffer integration: API-key authentication, channels and posting.
 
 Implements :class:`services.publishing.SocialPublisher` against Buffer's
 current API (https://developers.buffer.com):
 
-* ``GET  {oauth_url}``  consent screen (``client_id``, ``redirect_uri``,
-  ``response_type=code``, ``scope``, ``state``, S256 ``code_challenge``)
-* ``POST {token_url}``  code -> access + refresh token, and refresh
-  (form-encoded). Access tokens live about an hour; refresh tokens are
-  single-use and rotate on every refresh.
-* ``POST {api_url}``    GraphQL: ``account.organizations`` -> ``channels`` (the
+* ``POST {api_url}``  GraphQL: ``account.organizations`` -> ``channels`` (the
   social profiles) and ``createPost`` (one call per channel).
 
-Clients registered under Buffer's *Settings -> API* only exist on this API:
-the retired v1 endpoints (``bufferapp.com/oauth2``, ``api.bufferapp.com/1``)
-answer them with ``invalid_client``.
+Requests authenticate with a personal API key (Buffer -> *Settings -> API ->
+Create API key*). It acts on behalf of that one Buffer account, can reach all
+of its organizations and channels, and does not expire until it is revoked, so
+there is no consent screen, token exchange or refresh.
 
-The access token is sent as an ``Authorization: Bearer`` header, never in a
-URL, so it cannot leak into proxy or access logs. Every endpoint URL is
-configurable.
+The key is sent as an ``Authorization: Bearer`` header, never in a URL, so it
+cannot leak into proxy or access logs. The endpoint URL is configurable.
 
-Retries: read queries are retried on timeouts/5xx/429. Token requests are
-never retried (codes and refresh tokens are single-use) and posts are only
-retried when the connection failed *before* the request was sent, so a retry
-can never create a duplicate post.
+Retries: read queries are retried on timeouts/5xx/429. Posts are only retried
+when the connection failed *before* the request was sent, so a retry can never
+create a duplicate post.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
-from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -46,7 +38,6 @@ from services.errors import (
     ServiceNotConfiguredError,
 )
 from services.publishing import (
-    OAuthToken,
     PostRequest,
     PublishingProfile,
     PublishMode,
@@ -62,16 +53,11 @@ from services.retry import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OAUTH_URL = "https://auth.buffer.com/auth"
-DEFAULT_TOKEN_URL = "https://auth.buffer.com/token"  # noqa: S105 - a URL
 DEFAULT_API_URL = "https://api.buffer.com"
-#: Read organizations/channels, create posts, and get a refresh token.
-DEFAULT_SCOPE = "account:read posts:write offline_access"
 
-_EXPIRED_MESSAGE = "Your Buffer authorization expired. Please connect again."
-_INVALID_CLIENT_MESSAGE = (
-    "Buffer rejected this app's credentials (invalid_client). Check BUFFER_CLIENT_ID and "
-    "BUFFER_CLIENT_SECRET, and that BUFFER_OAUTH_URL/BUFFER_TOKEN_URL point at auth.buffer.com."
+_REJECTED_MESSAGE = (
+    "Buffer rejected the configured access token. Check BUFFER_ACCESS_TOKEN "
+    "(Buffer -> Settings -> API)."
 )
 _SHARE_MODES = {
     PublishMode.SCHEDULE: "customScheduled",
@@ -100,15 +86,10 @@ mutation CreatePost($input: CreatePostInput!) {
 
 @dataclass(frozen=True, slots=True)
 class BufferConfig:
-    """OAuth client credentials and endpoint URLs."""
+    """Personal access token (API key) and endpoint URL."""
 
-    client_id: str | None
-    client_secret: str | None
-    redirect_uri: str
-    oauth_url: str = DEFAULT_OAUTH_URL
-    token_url: str = DEFAULT_TOKEN_URL
+    access_token: str | None
     api_url: str = DEFAULT_API_URL
-    scope: str | None = DEFAULT_SCOPE
     timeout_seconds: float = 20.0
     retry: RetryPolicy = field(default_factory=RetryPolicy)
 
@@ -118,12 +99,6 @@ def format_buffer_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def pkce_challenge(code_verifier: str) -> str:
-    """S256 ``code_challenge`` for a PKCE ``code_verifier`` (RFC 7636)."""
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def is_legacy_url(url: str) -> bool:
@@ -152,15 +127,11 @@ class BufferClient:
     # ----------------------------------------------------------------- config
     @property
     def configured(self) -> bool:
-        return bool(
-            self.config.client_id and self.config.client_secret and self.config.redirect_uri
-        )
+        return bool(self.config.access_token)
 
     def _require_configured(self) -> None:
         if not self.configured:
-            raise ServiceNotConfiguredError(
-                "Buffer is not configured (set BUFFER_CLIENT_ID and BUFFER_CLIENT_SECRET)."
-            )
+            raise ServiceNotConfiguredError("Buffer is not configured (set BUFFER_ACCESS_TOKEN).")
 
     @property
     def _timeout(self) -> httpx.Timeout:
@@ -168,94 +139,11 @@ class BufferClient:
             self.config.timeout_seconds, connect=min(10.0, self.config.timeout_seconds)
         )
 
-    # ------------------------------------------------------------------ OAuth
-    def authorization_url(self, state: str, *, code_verifier: str) -> str:
-        """Consent-screen URL; ``state`` must be validated on the callback."""
-        self._require_configured()
-        if not state:
-            raise ValueError("state is required")
-        params: dict[str, str] = {
-            "client_id": self.config.client_id or "",
-            "redirect_uri": self.config.redirect_uri,
-            "response_type": "code",
-            "state": state,
-            "code_challenge": pkce_challenge(code_verifier),
-            "code_challenge_method": "S256",
-        }
-        if self.config.scope:
-            params["scope"] = self.config.scope
-            if "offline_access" in self.config.scope.split():
-                # OIDC Core 11: offline access (a refresh token) requires prompt=consent.
-                params["prompt"] = "consent"
-        separator = "&" if "?" in self.config.oauth_url else "?"
-        return f"{self.config.oauth_url}{separator}{urlencode(params)}"
-
-    async def exchange_code(self, code: str, *, code_verifier: str) -> OAuthToken:
-        """Trade the one-time authorization ``code`` for a token pair."""
-        self._require_configured()
-        if not code:
-            raise PublisherAuthError("Buffer did not return an authorization code.")
-        return await self._token_request(
-            {
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": self.config.redirect_uri,
-                "code_verifier": code_verifier,
-            },
-            rejected="Buffer rejected the authorization code. Please connect again.",
-            action="exchange the authorization code",
-        )
-
-    async def refresh(self, token: OAuthToken) -> OAuthToken:
-        """Trade the single-use refresh token for a new token pair."""
-        self._require_configured()
-        if not token.refresh_token:
-            raise PublisherAuthError(_EXPIRED_MESSAGE)
-        refreshed = await self._token_request(
-            {"grant_type": "refresh_token", "refresh_token": token.refresh_token},
-            rejected=_EXPIRED_MESSAGE,
-            action="renew the authorization",
-        )
-        if refreshed.refresh_token is None:  # not rotated: the old one stays valid
-            return replace(refreshed, refresh_token=token.refresh_token)
-        return refreshed
-
-    async def _token_request(
-        self, grant: dict[str, str], *, rejected: str, action: str
-    ) -> OAuthToken:
-        data = {
-            "client_id": self.config.client_id or "",
-            "client_secret": self.config.client_secret or "",
-            **grant,
-        }
-        response = await self._request("POST", self.config.token_url, data=data, auth=None)
-        if response.status_code in (400, 401, 403):
-            invalid_client = self._error_field(response, "error") == "invalid_client"
-            raise PublisherAuthError(
-                _INVALID_CLIENT_MESSAGE if invalid_client else rejected,
-                status_code=response.status_code,
-            )
-        payload = self._json_or_error(response, action=action)
-        access_token = payload.get("access_token") if isinstance(payload, dict) else None
-        if not isinstance(access_token, str) or not access_token:
-            raise PublisherAuthError("Buffer did not return an access token.")
-        expires_at: datetime | None = None
-        expires_in = payload.get("expires_in")
-        if isinstance(expires_in, int | float) and expires_in > 0:
-            expires_at = datetime.now(UTC) + timedelta(seconds=float(expires_in))
-        return OAuthToken(
-            access_token=access_token,
-            token_type=str(payload.get("token_type") or "bearer"),
-            refresh_token=payload.get("refresh_token"),
-            expires_at=expires_at,
-            scope=payload.get("scope"),
-        )
-
     # --------------------------------------------------------------- profiles
-    async def list_profiles(self, token: OAuthToken) -> list[PublishingProfile]:
-        """Channels (social profiles) of every organization the user belongs to."""
-        self._check_token(token)
-        data = await self._query(token, _ORGANIZATIONS_QUERY, action="load your account")
+    async def list_profiles(self) -> list[PublishingProfile]:
+        """Channels (social profiles) of every organization of the account."""
+        self._require_configured()
+        data = await self._query(_ORGANIZATIONS_QUERY, action="load your account")
         account = data.get("account")
         organizations = account.get("organizations") if isinstance(account, dict) else None
         if not isinstance(organizations, list):
@@ -265,7 +153,6 @@ class BufferClient:
             if not isinstance(organization, dict) or not organization.get("id"):
                 continue
             data = await self._query(
-                token,
                 _CHANNELS_QUERY,
                 {"organizationId": organization["id"]},
                 action="load channels",
@@ -275,7 +162,6 @@ class BufferClient:
 
     async def _query(
         self,
-        token: OAuthToken,
         query: str,
         variables: dict[str, Any] | None = None,
         *,
@@ -283,7 +169,7 @@ class BufferClient:
     ) -> dict[str, Any]:
         """Run a read-only GraphQL query, retrying transient failures."""
         return await retry_async(
-            lambda: self._graphql(token, query, variables, action=action),
+            lambda: self._graphql(query, variables, action=action),
             policy=self.config.retry,
             is_retryable=lambda exc: isinstance(exc, PublisherError) and exc.retryable,
             sleep=self._sleep,
@@ -318,20 +204,20 @@ class BufferClient:
         return profiles
 
     # ---------------------------------------------------------------- posting
-    async def publish(self, token: OAuthToken, post: PostRequest) -> PublishResult:
+    async def publish(self, post: PostRequest) -> PublishResult:
         """Create one Buffer post per channel (scheduled, queued or immediate).
 
         Channels are independent: a refusal for one is reported in
         :attr:`PublishResult.failures` while the others still go out. Only when
         every channel fails is the first error raised.
         """
-        self._check_token(token)
+        self._require_configured()
         post_ids: list[str] = []
         failures: list[tuple[str, str]] = []
         first_error: PublisherError | None = None
         for channel_id in post.profile_ids:
             try:
-                post_ids.append(await self._create_post(token, channel_id, post))
+                post_ids.append(await self._create_post(channel_id, post))
             except PublisherAuthError:
                 raise
             except PublisherError as exc:
@@ -349,7 +235,7 @@ class BufferClient:
         )
         return PublishResult(update_ids=tuple(post_ids), failures=tuple(failures))
 
-    async def _create_post(self, token: OAuthToken, channel_id: str, post: PostRequest) -> str:
+    async def _create_post(self, channel_id: str, post: PostRequest) -> str:
         values: dict[str, Any] = {
             "channelId": channel_id,
             "text": post.text,
@@ -364,11 +250,13 @@ class BufferClient:
         # Only connection failures (request never sent) are retried.
         data = await retry_async(
             lambda: self._graphql(
-                token, _CREATE_POST_MUTATION, {"input": values}, action="create the post"
+                _CREATE_POST_MUTATION, {"input": values}, action="create the post"
             ),
             policy=self.config.retry,
-            is_retryable=lambda exc: isinstance(exc, PublisherError)
-            and isinstance(exc.__cause__, httpx.ConnectError | httpx.ConnectTimeout),
+            is_retryable=lambda exc: (
+                isinstance(exc, PublisherError)
+                and isinstance(exc.__cause__, httpx.ConnectError | httpx.ConnectTimeout)
+            ),
             sleep=self._sleep,
             description="Buffer post creation",
         )
@@ -382,26 +270,14 @@ class BufferClient:
         raise PublisherAPIError(f"Buffer refused the post: {message or 'unknown error'}.")
 
     # ---------------------------------------------------------------- helpers
-    def _check_token(self, token: OAuthToken) -> None:
-        if not token.access_token:
-            raise PublisherAuthError("Buffer is not connected.")
-        if token.is_expired(leeway=0):
-            raise PublisherAuthError(_EXPIRED_MESSAGE)
-
     async def _graphql(
         self,
-        token: OAuthToken,
         query: str,
         variables: dict[str, Any] | None,
         *,
         action: str,
     ) -> dict[str, Any]:
-        response = await self._request(
-            "POST",
-            self.config.api_url,
-            json_body={"query": query, "variables": variables or {}},
-            auth=token,
-        )
+        response = await self._post({"query": query, "variables": variables or {}})
         self._raise_for_retryable(response)
         payload = self._json_or_error(response, action=action)
         if not isinstance(payload, dict):
@@ -425,9 +301,7 @@ class BufferClient:
         extensions = error.get("extensions")
         code = extensions.get("code") if isinstance(extensions, dict) else None
         if code in ("UNAUTHORIZED", "UNAUTHENTICATED"):
-            return PublisherAuthError(
-                "Buffer rejected the access token. Please connect Buffer again."
-            )
+            return PublisherAuthError(_REJECTED_MESSAGE)
         if code == "RATE_LIMIT_EXCEEDED":
             return PublisherError(
                 "Buffer's rate limit was reached. Please try again in a minute.",
@@ -442,28 +316,18 @@ class BufferClient:
         detail = message if isinstance(message, str) and message else "unknown error"
         return PublisherAPIError(f"Buffer could not {action}: {detail}.")
 
-    async def _request(
-        self,
-        method: str,
-        url: str,
-        *,
-        auth: OAuthToken | None,
-        data: dict[str, str] | None = None,
-        json_body: dict[str, Any] | None = None,
-    ) -> httpx.Response:
-        headers = {"Accept": "application/json"}
-        if auth is not None:
-            headers["Authorization"] = f"Bearer {auth.access_token}"
-        body: str | None = None
-        if data is not None:
-            body = urlencode(data)
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        elif json_body is not None:
-            body = json.dumps(json_body)
-            headers["Content-Type"] = "application/json"
+    async def _post(self, body: dict[str, Any]) -> httpx.Response:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.config.access_token}",
+            "Content-Type": "application/json",
+        }
         try:
-            return await self._http.request(
-                method, url, content=body, headers=headers, timeout=self._timeout
+            return await self._http.post(
+                self.config.api_url,
+                content=json.dumps(body),
+                headers=headers,
+                timeout=self._timeout,
             )
         except httpx.TimeoutException as exc:
             raise PublisherError("Buffer did not respond in time.", retryable=True) from exc
@@ -497,10 +361,7 @@ class BufferClient:
     def _json_or_error(self, response: httpx.Response, *, action: str) -> Any:
         status = response.status_code
         if status in (401, 403):
-            raise PublisherAuthError(
-                "Buffer rejected the access token. Please connect Buffer again.",
-                status_code=status,
-            )
+            raise PublisherAuthError(_REJECTED_MESSAGE, status_code=status)
         if status >= 500 or status in (408, 429):
             raise PublisherError(
                 f"Buffer is temporarily unavailable (HTTP {status}). Please try again.",

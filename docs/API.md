@@ -13,7 +13,7 @@ bodies and return **HTML fragments**. Interactive OpenAPI docs are available at
 | HTMX requests | Send `HX-Request: true`. Errors then come back as an empty body with `HX-Trigger: {"app:toast": {"level", "message"}}` and `HX-Reswap: none`. |
 | JSON clients | `Accept: application/json` turns error responses into `{"detail": "...", "request_id": "..."}`. |
 | Request id | Every response carries `X-Request-ID` (an incoming `X-Request-ID` of 8-64 safe characters is reused). |
-| Rate limits | Per client IP and worker; `429` with `Retry-After` when exceeded. Scopes: `upload`, `generate`, `schedule`, `auth`, `default`. |
+| Rate limits | Per client IP and worker; `429` with `Retry-After` when exceeded. Scopes: `upload`, `generate`, `schedule`, `default`. |
 | Body limit | Bodies above `MAX_REQUEST_BODY_MB` (default: one full upload batch) -> `413`. |
 | Toasts | Successful actions also set `HX-Trigger` with a `success`/`warning`/`info` toast. |
 
@@ -101,30 +101,20 @@ the card) and an `info` toast; `404` if the draft is unknown.
 
 ## Buffer
 
-### `GET /buffer/auth`
-
-Starts OAuth 2. Stores a single-use `state` (10-minute TTL) in the signed
-session and answers `303` to `BUFFER_OAUTH_URL?client_id&redirect_uri&response_type=code&state[&scope]`.
-If Buffer is not configured: `303 /` with an error flash.
-
-### `GET /buffer/callback`
-
-| Query | Notes |
-|---|---|
-| `state` | must match the stored state (constant-time compare, single use) |
-| `code` | authorization code (exchanged server-side, form-encoded) |
-| `error`, `error_description` | set by Buffer when the user cancels |
-
-Always answers `303 /` with a flash message (`success`, `warning` or
-`danger`). On success the token is encrypted and stored for the session.
+The app authenticates to Buffer with one server-wide personal API key
+(`BUFFER_ACCESS_TOKEN`), so there is no per-visitor connect step: every
+session sees the same Buffer account and shares one profile cache
+(`BUFFER_PROFILES_CACHE_SECONDS`). Buffer counts as configured when that
+variable is set.
 
 ### `GET /buffer/refresh`
 
-Reloads the connected profiles from Buffer (bypassing the cache), `303 /`.
-
-### `POST /buffer/disconnect`
-
-Deletes the stored token. `200` with `HX-Refresh: true`.
+Reloads the profiles from Buffer (bypassing the cache), then `303 /` with a
+flash message: `info` with the number of profiles found, or `danger` with the
+error (for example when Buffer rejects the configured key). Also the target of
+the "Retry" buttons shown while Buffer is unavailable. Because it bypasses the
+shared cache and spends the Buffer account's API quota, it is rate-limited by
+`RATE_LIMIT_DEFAULT` (`429` when exceeded).
 
 ### `POST /buffer/schedule`
 
@@ -135,12 +125,12 @@ Publish a draft through Buffer.
 | `draft_id` | 32 hex chars | required |
 | `caption` | string | required, <= 2,200 chars; saved to the draft |
 | `hashtags` | string | normalised like the autosave endpoint |
-| `profile_ids` | repeated | at least one; must belong to the connected account |
+| `profile_ids` | repeated | at least one; must belong to the configured Buffer account |
 | `mode` | `schedule` \| `queue` \| `now` | default `schedule` |
 | `scheduled_for` | `YYYY-MM-DDTHH:MM` | required for `schedule`; >= 1 minute ahead, <= 365 days |
 | `timezone` | IANA name | browser timezone (filled by the page); default `UTC` |
 
-What is sent to Buffer (`BUFFER_API_URL`, GraphQL, `Authorization: Bearer`), one
+What is sent to Buffer (`BUFFER_API_URL`, GraphQL, `Authorization: Bearer <BUFFER_ACCESS_TOKEN>`), one
 `createPost` mutation per selected profile (Buffer calls them channels):
 
 ```jsonc
@@ -157,11 +147,10 @@ What is sent to Buffer (`BUFFER_API_URL`, GraphQL, `Authorization: Bearer`), one
 | Status | Meaning |
 |---|---|
 | 200 | card with publish summary; toast `success` (or `warning` when the image URL is not publicly reachable, or Buffer refused some of the profiles) |
-| 401 | Buffer not connected/configured (toast), or token revoked (`HX-Refresh` + flash) |
 | 404 | draft not found in this session |
 | 422 | card re-rendered with field errors |
-| 502 | Buffer refused the post for every profile (its message is shown) |
-| 503 | Buffer unreachable / 5xx |
+| 502 | Buffer refused the post for every profile (its message is shown), or rejected the configured key (HTTP 401/403 or GraphQL `UNAUTHORIZED`/`UNAUTHENTICATED`; toast "Buffer rejected the configured access token. Check BUFFER_ACCESS_TOKEN (Buffer -> Settings -> API).") |
+| 503 | `BUFFER_ACCESS_TOKEN` not set (toast "Buffer is not configured on this server."), or Buffer unreachable / 5xx |
 
 ---
 
@@ -206,7 +195,6 @@ when that variable is set; `404` when `METRICS_ENABLED=false`.
 | `mab_vision_inference_seconds`, `mab_vision_failures_total`, `mab_vision_model_ready` | |
 | `mab_ai_generations_total` | `outcome`; plus `mab_ai_generation_seconds` |
 | `mab_publish_requests_total` | `provider`, `mode`, `outcome` |
-| `mab_oauth_events_total` | `provider`, `outcome` (connected, denied, invalid_state, ...) |
 | `mab_rate_limited_total` | `scope` |
 
 ### Static files

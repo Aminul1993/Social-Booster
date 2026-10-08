@@ -68,12 +68,6 @@ class AppMetrics:
             ["provider", "mode", "outcome"],
             registry=r,
         )
-        self.oauth_events = Counter(
-            "mab_oauth_events_total",
-            "OAuth connection events by outcome.",
-            ["provider", "outcome"],
-            registry=r,
-        )
         self.rate_limited = Counter(
             "mab_rate_limited_total",
             "Requests rejected by the rate limiter.",

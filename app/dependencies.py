@@ -14,9 +14,8 @@ from app.accounts import PublisherAccounts
 from app.config import Settings
 from app.container import ServiceContainer
 from app.drafts import DraftService
-from app.errors import NotConnectedError
+from app.errors import ServiceUnavailableError
 from app.security import ensure_session, verify_csrf
-from services.publishing import OAuthToken
 
 
 def get_container(request: Request) -> ServiceContainer:
@@ -49,15 +48,11 @@ Accounts = Annotated[PublisherAccounts, Depends(get_accounts)]
 SessionId = Annotated[str, Depends(get_session_id)]
 
 
-async def require_token(accounts: Accounts, session_id: SessionId) -> OAuthToken:
-    """The session's publishing token, or a 401 asking the user to connect."""
+async def require_publisher(accounts: Accounts) -> None:
+    """Reject publishing requests while no access token is configured (503)."""
     if not accounts.publisher.configured:
-        raise NotConnectedError("Buffer is not configured on this server.")
-    token = await accounts.token(session_id)
-    if token is None:
-        raise NotConnectedError()
-    return token
+        raise ServiceUnavailableError("Buffer is not configured on this server.")
 
 
-PublisherToken = Annotated[OAuthToken, Depends(require_token)]
+PublisherConfigured = Depends(require_publisher)
 CsrfProtected = Depends(verify_csrf)

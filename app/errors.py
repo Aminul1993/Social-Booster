@@ -45,16 +45,6 @@ class CSRFError(AppError):
     )
 
 
-class OAuthStateError(AppError):
-    status_code = 400
-    default_message = "The authorization response could not be verified. Please connect again."
-
-
-class NotConnectedError(AppError):
-    status_code = 401
-    default_message = "Connect your Buffer account first."
-
-
 class ServiceUnavailableError(AppError):
     status_code = 503
     default_message = "This feature is temporarily unavailable."

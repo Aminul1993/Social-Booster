@@ -1,34 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
 from services.errors import ServiceError, StorageError
-from services.publishing import OAuthToken, PostRequest, PublishingProfile, PublishMode
-
-
-class TestOAuthToken:
-    def test_roundtrip(self) -> None:
-        token = OAuthToken(
-            access_token="a",
-            refresh_token="r",
-            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-            scope="write",
-        )
-        assert OAuthToken.from_dict(token.to_dict()) == token
-
-    def test_roundtrip_minimal(self) -> None:
-        token = OAuthToken(access_token="a")
-        assert OAuthToken.from_dict({"access_token": "a", "token_type": None}) == token
-
-    def test_expiry_with_leeway(self) -> None:
-        now = datetime(2030, 1, 1, tzinfo=UTC)
-        soon = OAuthToken(access_token="a", expires_at=now + timedelta(seconds=30))
-        later = OAuthToken(access_token="a", expires_at=now + timedelta(hours=1))
-        assert soon.is_expired(now=now)
-        assert not later.is_expired(now=now)
-        assert not OAuthToken(access_token="a").is_expired(now=now)
+from services.publishing import PostRequest, PublishingProfile, PublishMode
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Scheduling workflow: upload -> generate -> connect Buffer -> edit -> schedule."""
+"""Scheduling workflow: upload -> generate -> edit -> schedule on Buffer."""
 
 from __future__ import annotations
 
@@ -9,13 +9,14 @@ from typing import Any
 import httpx
 import pytest
 import respx
+from fastapi import FastAPI
 
 from app.models import DraftStatus
 from services.publishing import PublishMode
 from tests.conftest import AppFactory
 from tests.helpers import (
+    BUFFER_ACCESS_TOKEN,
     BUFFER_API_URL,
-    BUFFER_TOKEN_URL,
     GOOD_COPY,
     OLLAMA_URL,
     AppClient,
@@ -28,24 +29,35 @@ from tests.helpers import (
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture
+def buffer_api(mock_http: respx.MockRouter) -> FakeBufferAPI:
+    """Buffer's GraphQL endpoint, stubbed before the client's first page load."""
+    api = FakeBufferAPI()
+    mock_http.post(BUFFER_API_URL).mock(side_effect=api)
+    return api
+
+
+@pytest.fixture
+def app(app_factory: AppFactory, buffer_api: FakeBufferAPI) -> FastAPI:
+    """Buffer configured with an access token (tests default to unconfigured)."""
+    return app_factory(buffer_access_token=BUFFER_ACCESS_TOKEN)
+
+
 def future_local(hours: int = 48) -> str:
     return (datetime.now(UTC) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
 
 
 def mock_services(router: respx.MockRouter) -> FakeBufferAPI:
     router.post(OLLAMA_URL).respond(json=ollama_reply(GOOD_COPY))
-    router.post(BUFFER_TOKEN_URL).respond(json={"access_token": "1/tok"})
     api = FakeBufferAPI()
     router.post(BUFFER_API_URL).mock(side_effect=api)
     return api
 
 
-async def prepare(client: AppClient, *, connect: bool = True) -> str:
+async def prepare(client: AppClient) -> str:
     draft_id = await client.upload_one()
     generated = await client.post("/generate", data={"draft_id": draft_id, "keywords": "dog"})
     assert generated.status_code == 200
-    if connect:
-        await client.connect_buffer()
     return draft_id
 
 
@@ -103,7 +115,7 @@ async def test_schedule_end_to_end(client: AppClient, mock_http: respx.MockRoute
         assert image_url(post).endswith(".png")
     mutation = api.requests[-1]
     assert "createPost" in json.loads(mutation.content)["query"]
-    assert mutation.headers["Authorization"] == "Bearer 1/tok"
+    assert mutation.headers["Authorization"] == f"Bearer {BUFFER_ACCESS_TOKEN}"
 
     assert "already sent to Buffer. Send it again?" in html  # guards accidental re-posts
 
@@ -203,23 +215,17 @@ async def test_unknown_profile_rejected(client: AppClient, mock_http: respx.Mock
     assert api.post_attempts == 0
 
 
-async def test_requires_connection(client: AppClient, mock_http: respx.MockRouter) -> None:
-    mock_services(mock_http)
-    draft_id = await prepare(client, connect=False)
-    response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
-    assert response.status_code == 401
-    assert toast(response)["message"] == "Connect your Buffer account first."
-
-
 async def test_requires_configuration(app_factory: AppFactory) -> None:
-    app = app_factory(buffer_client_id=None)
+    app = app_factory(buffer_access_token=None)
     with respx.mock(assert_all_called=False) as router:
-        mock_services(router)
+        api = mock_services(router)
         async with make_client(app) as client:
-            draft_id = await prepare(client, connect=False)
+            draft_id = await prepare(client)
+            assert "Scheduling is unavailable" in (await client.get("/")).text
             response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
-    assert response.status_code == 401
-    assert "not configured" in toast(response)["message"]
+    assert response.status_code == 503
+    assert toast(response)["message"] == "Buffer is not configured on this server."
+    assert api.requests == []
 
 
 async def test_buffer_rejects_post(client: AppClient, mock_http: respx.MockRouter) -> None:
@@ -238,20 +244,25 @@ async def test_buffer_rejects_post(client: AppClient, mock_http: respx.MockRoute
 
 async def test_revoked_token_during_publish(client: AppClient, mock_http: respx.MockRouter) -> None:
     api = mock_services(mock_http)
+    revoked = False
 
     def revoked_on_post(request: httpx.Request) -> httpx.Response:
-        if b"createPost" in request.content:
+        if revoked or b"createPost" in request.content:
             return httpx.Response(401)
         return api(request)
 
     mock_http.post(BUFFER_API_URL).mock(side_effect=revoked_on_post)
     draft_id = await prepare(client)
+    revoked = True  # the key is revoked in Buffer after the page loaded
     response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
-    assert response.status_code == 401
-    assert response.headers["HX-Refresh"] == "true"
-    assert await client.container.accounts.token(client.session_id) is None
+    assert response.status_code == 502
+    assert response.headers["HX-Reswap"] == "none"
+    assert "BUFFER_ACCESS_TOKEN" in toast(response)["message"]
+    draft = await client.container.drafts.get(client.session_id, draft_id)
+    assert draft.status is DraftStatus.GENERATED
     page = (await client.get("/")).text
-    assert "rejected the access token" in page
+    assert "rejected the configured access token" in page
+    assert "Buffer unavailable" in page
 
 
 async def test_buffer_outage_while_loading_profiles(
@@ -259,7 +270,7 @@ async def test_buffer_outage_while_loading_profiles(
 ) -> None:
     mock_services(mock_http)
     draft_id = await prepare(client)
-    client.container.accounts._cache.clear()
+    client.container.accounts.clear_cache()
     mock_http.post(BUFFER_API_URL).mock(side_effect=httpx.ConnectError("down"))
     response = await client.post("/buffer/schedule", data=schedule_form(draft_id))
     assert response.status_code == 503
@@ -267,7 +278,7 @@ async def test_buffer_outage_while_loading_profiles(
 
 
 async def test_local_image_url_warning(app_factory: AppFactory) -> None:
-    app = app_factory(public_base_url=None)
+    app = app_factory(public_base_url=None, buffer_access_token=BUFFER_ACCESS_TOKEN)
     with respx.mock(assert_all_called=False) as router:
         api = mock_services(router)
         async with make_client(app) as client:

@@ -49,7 +49,7 @@ def request(root_path: str = "", headers: dict[str, str] | None = None) -> Reque
         (OllamaAuthError("bad key"), 502, "OLLAMA_API_KEY"),
         (OllamaError("busy", retryable=True), 503, "Please try again"),
         (OllamaError("bad request"), 502, "bad request"),
-        (PublisherAuthError("expired"), 401, "expired"),
+        (PublisherAuthError("Check BUFFER_ACCESS_TOKEN"), 502, "BUFFER_ACCESS_TOKEN"),
         (PublisherAPIError("rejected"), 502, "rejected"),
         (PublisherError("down"), 503, "down"),
         (VisionError("no model"), 503, "no model"),

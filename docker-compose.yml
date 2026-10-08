@@ -1,6 +1,6 @@
 # Production-like stack.
 #
-#   cp .env.example .env      # then set SESSION_SECRET, OLLAMA_API_KEY, BUFFER_*
+#   cp .env.example .env      # then set SESSION_SECRET, OLLAMA_API_KEY, BUFFER_ACCESS_TOKEN
 #   docker compose up -d --build
 #   open http://localhost:8000
 #

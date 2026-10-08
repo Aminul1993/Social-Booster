@@ -31,11 +31,13 @@ pages. Invalid values stop the application at start-up with a clear message.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SESSION_SECRET` | random per start (dev only) | Signs the session cookie and derives the token-encryption key. **>= 32 random characters, required in production.** `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `SESSION_SECRET` | random per start (dev only) | Signs the session cookie. **>= 32 random characters, required in production.** `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `SESSION_COOKIE_NAME` | `mab_session` | Cookie name. |
-| `SESSION_MAX_AGE_SECONDS` | `1209600` (14 days) | Session lifetime; stored tokens older than this are purged. |
+| `SESSION_MAX_AGE_SECONDS` | `1209600` (14 days) | Session lifetime. |
 | `COOKIE_SECURE` | `true` in production | `Secure` flag on cookies (HTTPS only). Also enables HSTS. |
-| `TOKEN_ENCRYPTION_KEY` | derived from `SESSION_SECRET` (HKDF) | Optional Fernet key for OAuth tokens at rest, so `SESSION_SECRET` can rotate without disconnecting users. `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+
+`TOKEN_ENCRYPTION_KEY` no longer exists and is ignored: no Buffer tokens are
+stored any more (see [Buffer](#buffer)).
 
 ## Persistence
 
@@ -91,21 +93,18 @@ ignored; `VISION_BACKEND=resnet50` is rejected at start-up.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BUFFER_CLIENT_ID` | - | OAuth client id (Buffer -> Settings -> API, private client). |
-| `BUFFER_CLIENT_SECRET` | - | OAuth client secret. |
-| `BUFFER_REDIRECT_URI` | `http://localhost:8000/buffer/callback` | Must exactly match a redirect URI registered with Buffer, which requires `https` (also on localhost). |
-| `BUFFER_OAUTH_URL` | `https://auth.buffer.com/auth` | Consent screen (authorization code + PKCE). |
-| `BUFFER_TOKEN_URL` | `https://auth.buffer.com/token` | Code -> token exchange and token refresh. |
+| `BUFFER_ACCESS_TOKEN` | - | Personal API key from Buffer -> Settings -> API -> **Create API key** (<https://publish.buffer.com/settings/api>), sent as `Authorization: Bearer`. Buffer is "configured" when this is set. The key acts on behalf of that one Buffer account, reaches all of its organizations and channels, has no scopes and does not expire until revoked. **Every visitor of the app posts with it** - put a public deployment behind access control ([SECURITY.md](SECURITY.md)). |
 | `BUFFER_API_URL` | `https://api.buffer.com` | GraphQL API: organizations, channels, `createPost`. |
-| `BUFFER_SCOPE` | `account:read posts:write offline_access` | Scopes requested on the consent screen; `offline_access` gives the refresh token that renews the one-hour access tokens. |
 | `BUFFER_TIMEOUT_SECONDS` | `20` | Per request. |
-| `BUFFER_MAX_RETRIES` | `3` | Attempts for channel listing; posting only retries connection failures; token requests are never retried. |
-| `BUFFER_PROFILES_CACHE_SECONDS` | `300` | Channel cache per session (`0` disables). |
+| `BUFFER_MAX_RETRIES` | `3` | Attempts for channel listing; posting only retries connection failures. |
+| `BUFFER_PROFILES_CACHE_SECONDS` | `300` | Channel cache shared by all sessions (`0` disables). `GET /buffer/refresh` bypasses it. |
 
-The legacy v1 URLs (`bufferapp.com/oauth2/authorize`, `api.bufferapp.com/1/...`)
-reject clients created under Buffer's Settings -> API with `invalid_client`;
-the app logs a warning at start-up if any `BUFFER_*_URL` still points there.
-`BUFFER_PROFILES_URL` and `BUFFER_POST_URL` no longer exist and are ignored.
+The legacy v1 API (`api.bufferapp.com/1/...`) does not accept API keys from
+Buffer's Settings -> API; the app logs a warning at start-up if
+`BUFFER_API_URL` still points at `bufferapp.com`.
+`BUFFER_PROFILES_URL` and `BUFFER_POST_URL` no longer exist and are ignored, as
+are the former OAuth settings (client credentials, `BUFFER_REDIRECT_URI`,
+`BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL` and `BUFFER_SCOPE`).
 
 ## Rate limiting
 
@@ -118,8 +117,10 @@ process.
 | `RATE_LIMIT_UPLOAD` | `20/minute` | `POST /upload` |
 | `RATE_LIMIT_GENERATE` | `30/minute` | `POST /generate` |
 | `RATE_LIMIT_SCHEDULE` | `20/minute` | `POST /buffer/schedule` |
-| `RATE_LIMIT_AUTH` | `10/minute` | `/buffer/auth`, `/buffer/callback`, `/buffer/disconnect` |
-| `RATE_LIMIT_DEFAULT` | `120/minute` | Autosave and delete |
+| `RATE_LIMIT_DEFAULT` | `120/minute` | Autosave, delete and `GET /buffer/refresh` |
+
+`RATE_LIMIT_AUTH` no longer exists (the Buffer OAuth routes were removed) and is
+ignored.
 
 ## Observability
 

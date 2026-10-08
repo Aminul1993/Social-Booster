@@ -22,13 +22,13 @@ Legend: **Done** = implemented and verified by the listed tests;
 | FR-07 | Caption <= 150 chars; 5-8 hashtags prefixed with `#` | §4 prompt | `services/prompts.py`, `services/ollama.py::finalize_copy` (`CAPTION_MAX_CHARS`, `HASHTAGS_MIN/MAX`) | `test_ollama.py::TestFinalize` | Done |
 | FR-08 | OpenAI-compatible chat payload, `temperature 0.7`, bounded `max_tokens` | §6, §11 | `OllamaClient._payload` (+ native `/api/chat`) | `test_ollama.py::test_generate_copy_openai_payload`, `test_native_api_payload_and_response` | Done |
 | FR-09 | Re-render the same card with editable caption and hashtags | §8 | `_card.html` (textarea + input), autosave `PATCH /drafts/{id}` | `test_generation_workflow.py::test_autosave_edits`, browser E2E | Done |
-| FR-10 | Start Buffer OAuth (redirect to consent page) | §4 `/buffer/auth`, §7 | `app/routes/buffer.py::buffer_auth`, `BufferClient.authorization_url` | `test_oauth_workflow.py::test_full_connect_flow`, `test_buffer.py::TestOAuth` | Done |
-| FR-11 | OAuth callback exchanges the code for an access token | §4, §7 | `buffer_callback`, `BufferClient.exchange_code` | OAuth workflow + unit tests | Changed (D-04) |
-| FR-12 | Persist the token server-side; it never reaches the browser | §0, §4, §11 | `TokenRepository` (Fernet-encrypted, keyed by session id) | `test_oauth_workflow.py::test_full_connect_flow` (token not in page/cookie, ciphertext only) | Changed (D-05) |
-| FR-13 | Retrieve the user's Buffer profiles | §7 | `BufferClient.list_profiles`, `PublisherAccounts.profiles` (cached) | `test_buffer.py::TestProfiles`, `test_accounts.py` | Done |
+| FR-10 | Start Buffer OAuth (redirect to consent page) | §4 `/buffer/auth`, §7 | Replaced by a server-wide personal API key (D-16): `BUFFER_ACCESS_TOKEN`, no consent page; `/buffer/auth` removed | `test_buffer_workflow.py::test_configured_token_lists_profiles`, `test_oauth_routes_are_gone` | Changed (D-16) |
+| FR-11 | OAuth callback exchanges the code for an access token | §4, §7 | No code exchange (D-16): the configured key is sent as `Authorization: Bearer` by `BufferClient` | `test_buffer.py::TestConfiguration`, `test_buffer_workflow.py::test_configured_token_lists_profiles` | Changed (D-16) |
+| FR-12 | Persist the token server-side; it never reaches the browser | §0, §4, §11 | `BUFFER_ACCESS_TOKEN` (`SecretStr`) in server configuration; never in the cookie or a page | `test_buffer_workflow.py::test_configured_token_lists_profiles` (key not in page/cookie) | Changed (D-05, D-16) |
+| FR-13 | Retrieve the user's Buffer profiles | §7 | `BufferClient.list_profiles`, `PublisherAccounts.profiles` (cached, shared by all sessions) | `test_buffer.py::TestProfiles`, `test_accounts.py`, `test_buffer_workflow.py::test_profiles_are_shared_across_sessions` | Done |
 | FR-14 | Schedule the post on Buffer with text, hashtags, image and date-time | §4 `/buffer/schedule`, §7 | `app/routes/buffer.py::buffer_schedule`, `BufferClient.publish` | `test_scheduling_workflow.py::test_schedule_end_to_end`, browser E2E | Changed (D-04, D-12) |
 | FR-15 | Success feedback fragment after scheduling | §4 | card notice + publish summary + `HX-Trigger` toast | scheduling workflow | Done |
-| FR-16 | UI shows whether Buffer is connected / offers "Connect Buffer" | §8, §9 | `partials/_buffer_status.html`, schedule panel states | OAuth workflow, `test_routes.py::TestIndex` | Done |
+| FR-16 | UI shows whether Buffer is connected / offers "Connect Buffer" | §8, §9 | `partials/_buffer_status.html` (not configured / connected with profiles / key rejected + Retry), schedule panel states; nothing to connect (D-16) | `test_buffer_workflow.py::test_not_configured`, `test_rejected_token_is_shown`, `test_routes.py::TestIndex` | Changed (D-16) |
 | FR-17 | Drag-and-drop upload zone | §8 | `index.html` dropzone + `app.js` drop handler | browser E2E (file input path), manual | Done |
 | FR-18 | Multiple Buffer profiles + profile selection | §12, brief Ph.7 | checkbox list per card, one `createPost` per channel, server-side allow-list | `test_scheduling_workflow.py::test_unknown_profile_rejected`, E2E | Done |
 | FR-19 | Image preview | §12, brief Ph.5 | client-side thumbnails before upload, card images, full-size modal | browser E2E (modal) | Done |
@@ -44,7 +44,7 @@ Legend: **Done** = implemented and verified by the listed tests;
 | UI-02 | Upload interface, previews, progress | dropzone, `upload-previews`, progress bar on `htmx:xhr:progress` | E2E | Done |
 | UI-03 | AI generation workflow with loading states | spinner + busy label, shimmer overlay, fieldset disabled during requests | E2E | Done |
 | UI-04 | Caption / hashtag editing | textarea + input, counters, debounced autosave | E2E, generation workflow | Done |
-| UI-05 | Buffer connection flow | navbar widget + per-card connect link, drafts survive the redirect | E2E ("draft + edits survived OAuth redirect") | Done |
+| UI-05 | Buffer connection flow | navbar status widget + per-card "Retry Buffer" button (no connect step, D-16); drafts are kept while Buffer is unavailable | `test_buffer_workflow.py`, `test_scheduling_workflow.py::test_buffer_outage_while_loading_profiles` | Changed (D-16) |
 | UI-06 | Scheduling interface | profiles, mode switch (CSS-only), local datetime + timezone | E2E, scheduling workflow | Done |
 | UI-07 | Success / error feedback | `HX-Trigger` toasts, flash messages, inline 422 errors | route + workflow tests, E2E | Done |
 | UI-08 | Mobile responsiveness | responsive grid, no horizontal scroll at 390 px | E2E | Done |
@@ -57,14 +57,14 @@ Legend: **Done** = implemented and verified by the listed tests;
 | SEC-01 | API keys only on the server | `SecretStr` settings, server-side calls | `test_config.py::test_secrets_are_hidden` | Done |
 | SEC-02 | Signed cookies (itsdangerous) | Starlette `SessionMiddleware` | `test_routes.py::test_session_cookie_is_signed_httponly_lax` | Done |
 | SEC-03 | CSRF protection (`X-CSRF-Token`) | `security.verify_csrf`, `hx-headers` | `test_security.py::TestCsrf`, `test_routes.py::TestCsrf` | Done |
-| SEC-04 | OAuth state validation | `issue_oauth_state` / `consume_oauth_state` (single-use, TTL) | `test_security.py::TestOAuthState`, OAuth workflow (forged, replay, missing) | Done |
+| SEC-04 | OAuth state validation | No longer applicable: there is no OAuth flow (D-16) and the OAuth routes are gone | `test_buffer_workflow.py::test_oauth_routes_are_gone` | Changed (D-16) |
 | SEC-05 | File upload validation, 10 MB per image | `read_upload`, `ImageProcessor` | `test_images.py`, `test_validation.py::TestReadUpload` | Done |
 | SEC-06 | MIME validation | declared MIME allow-list + magic bytes + Pillow format | `test_images.py::TestProcessing` | Done |
 | SEC-07 | Safe filenames / storage abstraction | random keys, key regex, `Storage` protocol | `test_storage.py` | Done |
-| SEC-08 | Rate limiting | token buckets per scope/IP | `test_rate_limit.py`, `test_routes.py::TestRateLimiting`, OAuth rate-limit test | Done |
+| SEC-08 | Rate limiting | token buckets per scope/IP | `test_rate_limit.py`, `test_routes.py::TestRateLimiting`, `test_buffer_workflow.py::test_refresh_is_rate_limited` | Done |
 | SEC-09 | Secure secrets handling | env / `.env` (ignored) / `/run/secrets`, production secret check | `test_config.py::TestProduction` | Done |
 | SEC-10 | No dynamic code evaluation | no eval in Python; HTMX `allowEval=false`; strict CSP | E2E "no CSP violations" | Done |
-| SEC-11 | Token never echoed | encrypted storage, header-only transport, log redaction | OAuth workflow, `test_logging.py::test_redact` | Done |
+| SEC-11 | Token never echoed | `SecretStr` server setting, header-only transport, log redaction | Buffer workflow (key not in page/cookie), `test_config.py::test_secrets_are_hidden`, `test_logging.py::test_redact` | Done |
 | SEC-12 | DoS: bound concurrent inference | semaphore + executor + timeout, body limit, pixel budget | vision + middleware tests | Done |
 | SEC-13 | Bound Ollama cost | `OLLAMA_MAX_TOKENS`, `OLLAMA_TEMPERATURE`, generate rate limit | `test_ollama.py` payload assertions | Done |
 
@@ -93,7 +93,7 @@ Legend: **Done** = implemented and verified by the listed tests;
 | DEP-04 | Environment configuration (`.env`, never committed) | `.env.example`, `.gitignore`, `.dockerignore` | `test_env_example_is_valid` | Done |
 | DEP-05 | CI/CD | `.github/workflows/ci.yml` (quality, tests 3.12/3.13, docker smoke) | YAML validated | Done |
 | DEP-06 | Pre-commit, Ruff, Black, type checking | `.pre-commit-config.yaml`, `pyproject.toml` | all hooks pass | Done |
-| DEP-07 | Pytest, > 90 % coverage | `tests/` (unit + integration) | 375 tests, 98.75 % | Done |
+| DEP-07 | Pytest, > 90 % coverage | `tests/` (unit + integration) | 401 tests, 98.86 % | Done |
 | DEP-08 | Python 3.12+ | `requires-python >=3.12`, PEP 695 generics | CI matrix | Done |
 
 ### Documentation (brief Phase 10)
@@ -117,19 +117,20 @@ Legend: **Done** = implemented and verified by the listed tests;
 |---|---|---|---|
 | D-01 | `services/`, `templates/`, `static/` inside `app/` | top-level `services/`, `templates/`, `static/` | Required layout of the build brief; `steps.md`'s own `main.py` already resolved templates from the project root. |
 | D-02 | `OLLAMA_ENDPOINT` default `https://api.ollama.com/v1/chat/completions`, model hard-coded `llama3.2:latest` | default `https://ollama.com/v1/chat/completions`, new `OLLAMA_MODEL` (default `gpt-oss:120b`) | `ollama.com` is Ollama Cloud's documented API host and `llama3.2` is not a cloud model. Both remain configurable; native `/api/chat` also supported for self-hosted Ollama. |
-| D-03 | Buffer URLs on `buffer.com` / `api.buffer.com`; profiles URL hard-coded | `auth.buffer.com` (OAuth + PKCE) and `api.buffer.com` (GraphQL) defaults via `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_API_URL` | Buffer's current API; the v1 `bufferapp.com` endpoints reject clients from Settings -> API (`invalid_client`). Every URL is overridable. |
-| D-04 | Token exchange and update creation sent as JSON; `media.picture` | form-encoded token requests; GraphQL `createPost` per channel with `assets.image.url` | OAuth token endpoints take form bodies; Buffer's GraphQL API posts to one channel per mutation. |
-| D-05 | Access token stored in a signed cookie | Fernet-encrypted server-side storage keyed by an opaque session id | A signed cookie is readable by the browser; the stated goal ("the token never hits the browser") required server-side storage. |
+| D-03 | Buffer URLs on `buffer.com` / `api.buffer.com`; profiles URL hard-coded | `api.buffer.com` (GraphQL) default via `BUFFER_API_URL` | Buffer's current API; the v1 `bufferapp.com` API does not accept API keys from Settings -> API (a start-up warning flags it). The URL is overridable (e.g. for the mocks). |
+| D-04 | Token exchange and update creation sent as JSON; `media.picture` | no token exchange (D-16); GraphQL `createPost` per channel with `assets.image.url` | Buffer's GraphQL API posts to one channel per mutation. |
+| D-05 | Access token stored in a signed cookie | one key in server configuration (`BUFFER_ACCESS_TOKEN`, D-16); the cookie carries only an opaque session id | A signed cookie is readable by the browser; the stated goal ("the token never hits the browser") required keeping it on the server. |
 | D-06 | `torch.hub.load(..., pretrained=True)` + downloaded `imagenet_classes.txt` | no local model at all (see D-15) | Superseded: image description moved to an online vision model. |
 | D-07 | Prompt asks for two lines `CAPTION:` / `HASHTAGS:` | prompt asks for JSON; parser accepts JSON, the original line format and free text, plus one repair turn | Structured parsing and error recovery requirements. |
 | D-08 | HTMX 1.9.12 and Bootstrap 5.3.3 from CDNs | HTMX 2.0.11 and Bootstrap 5.3.8 vendored in `static/vendor/` | Strict CSP without third-party script origins; current maintained versions; works offline. |
 | D-09 | Old dependency pins (FastAPI 0.111, torch 2.3...) | current pins (FastAPI 0.142, Pillow 12.3...), no PyTorch | Python 3.12+ target and security fixes. |
 | D-10 | One schedule form at the bottom that uses the *first* card | scheduling per card, multiple profiles, three modes | Each image is its own post; spec §12 lists profile selection as the next step. |
-| D-11 | `/generate` receives `image_url` + `labels` from the client | receives `draft_id` + editable `keywords` | Prevents arbitrary media-URL injection; drafts are server-side so they survive the OAuth redirect. |
+| D-11 | `/generate` receives `image_url` + `labels` from the client | receives `draft_id` + editable `keywords` | Prevents arbitrary media-URL injection; drafts are server-side so they survive reloads and Buffer outages. |
 | D-12 | `datetime-local` labelled "UTC" | interpreted in the browser's IANA timezone and converted to UTC | `datetime-local` has no timezone; using the user's zone avoids off-by-hours schedules. |
 | D-13 | Upload limit "10 MB" mentioned only | enforced while streaming + pixel budget + request body cap | Security checklist made concrete. |
 | D-14 | Concurrency suggestion `asyncio.Semaphore(2)` | `VISION_MAX_CONCURRENCY` (default 2) semaphore + bounded executor | Same intent, configurable. |
 | D-15 | In-process ResNet-50 (PyTorch) tags images | default `VISION_BACKEND=ollama`: a free online vision model (`gemma4:31b` on Ollama Cloud) returns a description + keywords; ResNet-50 and PyTorch were removed | PyTorch made each worker ~400 MB and the image ~1.8 GB, too much for small hosts (e.g. 512 MB plans); the online model also describes the scene, which improves captions. |
+| D-16 | Per-visitor Buffer OAuth 2 (consent page, callback, code -> access token) | one server-wide personal API key, `BUFFER_ACCESS_TOKEN` (Buffer -> Settings -> API -> Create API key); `/buffer/auth`, `/buffer/callback`, `/buffer/disconnect` removed; the old `oauth_tokens` table is dropped on start-up | Buffer's API keys act for one account, reach all of its organizations and channels, have no scopes and do not expire until revoked, so there is no consent screen, code exchange, refresh or per-session token storage. Trade-off: every visitor posts to that one Buffer account, so public deployments need access control in front of the app (SECURITY.md). |
 
 ### Items from `steps.md` intentionally not implemented
 
@@ -139,7 +140,7 @@ Legend: **Done** = implemented and verified by the listed tests;
 | §12 swap to CLIP / Google Vision | Done differently: any vision-capable chat model via `VISION_MODEL` / `VISION_ENDPOINT`, or a custom `ImageDescriber`. |
 | §12 OpenAI / Gemini instead of Ollama | Any OpenAI-compatible endpoint works via `OLLAMA_ENDPOINT`. |
 | §12 server-side APScheduler auto-posting | Buffer performs the scheduling (core requirement); not duplicated. |
-| §12 user accounts (FastAPI-Users) | Out of scope; sessions + server-side token store are the extension point (see SECURITY.md "Known limitations"). |
+| §12 user accounts (FastAPI-Users) | Out of scope; every visitor shares the Buffer account behind `BUFFER_ACCESS_TOKEN`, so access is controlled in front of the app (basic auth, SSO proxy, IP allow-list). Sessions are the extension point (see SECURITY.md "Known limitations"). |
 | §12 cropper / carousel | Optional ideas; previews and a full-size modal are provided instead. |
 
 ### Gaps found during review and fixed
@@ -164,24 +165,24 @@ Validation run on Windows 11 / Python 3.12.0 and in the Linux container
 
 | Check | Result |
 |---|---|
-| Unit tests | 334 passed |
-| Integration tests (upload, OAuth, AI generation, scheduling workflows) | 41 passed |
-| **Total** | **375 passed, 0 failed** |
-| Line + branch coverage (`app`, `services`) | **98.75 %** (gate: 90 %) |
+| Unit tests | 357 passed |
+| Integration tests (upload, Buffer, AI generation, scheduling workflows) | 44 passed |
+| **Total** | **401 passed, 0 failed** |
+| Line + branch coverage (`app`, `services`) | **98.86 %** (gate: 90 %) |
 | Ruff (incl. bandit security rules) | 0 findings |
-| Black | 68 files unchanged |
-| Mypy `--strict` (app, services, tests, scripts, gunicorn.conf.py) | 0 errors in 68 files |
+| Black | 67 files unchanged |
+| Mypy `--strict` (app, services, tests, scripts, gunicorn.conf.py) | 0 errors in 67 files |
 | Pre-commit (11 hooks) | all passed |
 | Docker image build | success (318 MB, no ML runtime) |
 | Container smoke test (read-only rootfs, production mode) | `/health` 200, `/health/ready` ok (vision: ok, no model to load) |
 | Online image description from the container | golden-retriever photo -> "A golden retriever dog with a black collar lies in a field of dry grass during golden hour." + 5 keywords; 3 photos (incl. 40 MP) in 5.0 s; container peak 207 MiB |
-| Browser E2E (Chromium, container + mock Ollama/Buffer) | 24/24 checks pass (the only console message is Chrome logging the intentional 422 validation response): upload, labels, generate, autofocus, autosave, counters, OAuth round trip with drafts preserved, 422 inline errors, mode switch, scheduling to 2 profiles with image URL and UTC time, modal, dark mode, 390 px mobile layout, delete, **no CSP violations** |
+| Browser E2E (Chromium, container + mock Ollama/Buffer) | 24/24 checks pass (the only console message is Chrome logging the intentional 422 validation response): upload, labels, generate, autofocus, autosave, counters, OAuth round trip with drafts preserved, 422 inline errors, mode switch, scheduling to 2 profiles with image URL and UTC time, modal, dark mode, 390 px mobile layout, delete, **no CSP violations**. Last run before the switch to `BUFFER_ACCESS_TOKEN` (D-16); the OAuth round-trip check no longer applies. |
 
-Per-module coverage (lowest first): `services/images.py` 94 %,
+Per-module coverage (lowest first): `services/images.py` 95 %,
 `app/drafts.py` 96 %, `app/dependencies.py` / `logging_config.py` /
 `middleware.py` 97 %, all other modules 98-100 %.
 
 **Requirements coverage: 62 / 62 traced requirements implemented and
-verified, plus all 8 documentation deliverables.** Four requirement rows are
-marked *Changed* (14 documented deviations D-01..D-14 overall); six optional
+verified, plus all 8 documentation deliverables.** Nine requirement rows are
+marked *Changed* (16 documented deviations D-01..D-16 overall); six optional
 §12/§13 ideas are intentionally deferred with alternatives.

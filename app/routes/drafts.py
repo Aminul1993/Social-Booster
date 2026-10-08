@@ -50,7 +50,7 @@ async def upload(
         headers = toast_header("warning", f"Uploaded {count} {noun}. Skipped: {skipped}.")
     else:
         headers = toast_header("success", f"Uploaded {count} {noun}. Generate copy for each card.")
-    publisher = await accounts.status(session_id)
+    publisher = await accounts.status()
     cards = [build_card(request, container.storage, draft) for draft in outcome.drafts]
     return render_cards(request, cards, publisher, headers=headers)
 
@@ -87,10 +87,10 @@ async def generate(
             keywords=form.keywords,
             errors={"keywords": exc.message},
         )
-        publisher = await accounts.status(session_id)
+        publisher = await accounts.status()
         return render_card(request, card, publisher, status_code=422)
 
-    publisher = await accounts.status(session_id)
+    publisher = await accounts.status()
     card = build_card(request, container.storage, draft, focus="caption")
     return render_card(
         request,

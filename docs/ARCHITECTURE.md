@@ -13,25 +13,27 @@ flowchart LR
     subgraph host[Application host / container]
         proxy[Reverse proxy<br/>Caddy / NGINX<br/>TLS, body limit]
         app[FastAPI app<br/>Gunicorn + Uvicorn workers]
-        db[(SQLite WAL<br/>drafts + encrypted tokens)]
+        db[(SQLite WAL<br/>drafts)]
         files[(Upload storage<br/>/uploads volume)]
     end
     ollama[Ollama Cloud<br/>chat completions:<br/>vision model + copywriter]
-    buffer[Buffer API<br/>OAuth 2 + GraphQL]
+    buffer[Buffer API<br/>GraphQL]
     prom[Prometheus]
 
     user -- HTTPS --> proxy --> app
     app --> db
     app --> files
     app -- "HTTPS, Bearer API key (image previews, prompts)" --> ollama
-    app -- HTTPS, OAuth token --> buffer
+    app -- "HTTPS, Bearer BUFFER_ACCESS_TOKEN" --> buffer
     buffer -- fetches image --> proxy
     prom -- /metrics --> app
 ```
 
-Secrets (Ollama key, Buffer client secret, OAuth tokens) only ever exist on the
-server. The browser holds a signed session cookie containing a random session
-id and a CSRF token - nothing else.
+Secrets (Ollama key, Buffer personal API key) only ever exist on the server.
+The browser holds a signed session cookie containing a random session id and a
+CSRF token - nothing else. The Buffer key is server configuration, so every
+visitor of the app posts to the same Buffer account; the app has no login of
+its own (see [SECURITY.md](SECURITY.md)).
 
 ## 2. Code layout and layers
 
@@ -41,7 +43,7 @@ flowchart TB
         routes[routes/<br/>pages, drafts, buffer, ops]
         deps[dependencies.py<br/>DI providers]
         mw[middleware.py<br/>security headers, request id,<br/>metrics, body limit]
-        sec[security.py<br/>session, CSRF, OAuth state,<br/>token encryption]
+        sec[security.py<br/>session, CSRF, flash]
         err[error_handlers.py<br/>toast / JSON / HTML errors]
         views[views.py + templating.py<br/>view models, Jinja env]
     end
@@ -71,7 +73,6 @@ flowchart TB
     drafts --> storage
     drafts --> images
     accounts --> buffer
-    accounts --> repo
     container --> services
 ```
 
@@ -83,9 +84,9 @@ tested without FastAPI.
 | Layer | Responsibility | Key types |
 |---|---|---|
 | Routes | Parse forms, call application services, pick a template | `APIRouter`s in `app/routes/` |
-| Dependencies | Inject container, session id, CSRF check, rate limits, OAuth token | `app/dependencies.py`, `app/rate_limit.py` |
+| Dependencies | Inject container, session id, CSRF check, rate limits, "publisher configured" guard | `app/dependencies.py`, `app/rate_limit.py` |
 | Application services | Orchestrate the workflow, enforce business rules | `DraftService`, `PublisherAccounts` |
-| Repositories | Persistence scoped by session id | `DraftRepository`, `TokenRepository` |
+| Repositories | Persistence scoped by session id | `DraftRepository` |
 | Service adapters | Talk to Ollama (vision + copy), Buffer, disk | `VisionService`, `OllamaClient`, `BufferClient`, `LocalFileStorage` |
 | Composition root | Build everything from `Settings`, own lifecycle | `ServiceContainer`, `create_app()` |
 
@@ -101,7 +102,7 @@ flowchart LR
     sess --> router[FastAPI router]
     router --> d1[Depends: rate_limit]
     d1 --> d2[Depends: verify_csrf]
-    d2 --> d3[Depends: session id / token]
+    d2 --> d3[Depends: session id /<br/>publisher configured]
     d3 --> handler[Route handler]
     handler --> tpl[TemplateResponse<br/>+ HX-Trigger toast]
 ```
@@ -154,7 +155,7 @@ flowchart TB
     error[errors/error.html]
     card[_card.html<br/>one draft: image, labels, keywords,<br/>tone, generate, caption, hashtags,<br/>schedule panel, publish summary]
     cards[partials/_cards.html<br/>loop of cards - upload response]
-    status[partials/_buffer_status.html<br/>connect / profiles / disconnect]
+    status[partials/_buffer_status.html<br/>not configured / profiles / retry]
     save[partials/_save_status.html]
     icons[partials/_icons.html<br/>inline SVG macro]
 
@@ -252,7 +253,13 @@ not found; exhausted retries -> 503 "AI service busy"; reasoning models that
 spend all tokens -> explicit "increase OLLAMA_MAX_TOKENS". The card is never
 replaced on failure (`HX-Reswap: none`), so edits are preserved.
 
-## 8. Buffer OAuth flow
+## 8. Buffer authentication and profiles
+
+The app authenticates to Buffer with one personal API key created in Buffer
+(*Settings -> API -> Create API key*) and configured as `BUFFER_ACCESS_TOKEN`.
+The key acts on behalf of that one Buffer account, reaches all of its
+organizations and channels, has no scopes and does not expire until it is
+revoked - so there is no consent screen, code exchange or token refresh.
 
 ```mermaid
 sequenceDiagram
@@ -260,31 +267,31 @@ sequenceDiagram
     participant B as Browser
     participant A as App
     participant BF as Buffer
-    B->>A: GET /buffer/auth
-    A->>A: state = token_urlsafe(32)<br/>stored in signed session (+ issue time)<br/>PKCE verifier = HMAC(secret, state), never stored
-    A-->>B: 303 -> auth.buffer.com/auth?client_id&redirect_uri&response_type=code<br/>&scope&state&code_challenge (S256)&prompt=consent
-    B->>BF: consent screen
-    BF-->>B: 302 -> /buffer/callback?code&state
-    B->>A: GET /buffer/callback?code&state
-    A->>A: consume_oauth_state: single-use, 10 min TTL,<br/>constant-time compare
-    A->>BF: POST auth.buffer.com/token (form, client secret, code_verifier)
-    BF-->>A: {"access_token", "refresh_token", "expires_in": 3600}
-    A->>A: Fernet-encrypt token, store by session id (SQLite)
-    A-->>B: 303 -> / + flash "Buffer connected"
     B->>A: GET /
-    A->>BF: POST api.buffer.com (Bearer, GraphQL)<br/>account.organizations, then channels - cached 5 min
-    A-->>B: page with profiles in navbar and schedule forms
+    alt BUFFER_ACCESS_TOKEN not set
+        A-->>B: navbar badge "Buffer not configured"
+    else configured
+        A->>BF: POST api.buffer.com (Bearer BUFFER_ACCESS_TOKEN, GraphQL)<br/>account.organizations, then channels - cached 5 min
+        BF-->>A: channels
+        A-->>B: page with profiles in navbar and schedule forms
+    end
+    B->>A: GET /buffer/refresh
+    A->>BF: same queries, bypassing the cache
+    A-->>B: 303 -> / + flash (profile count or error)
 ```
 
-Access tokens last about an hour. When a stored token is (nearly) expired the
-first request renews it at the token endpoint with `grant_type=refresh_token`
-and stores the rotated pair. Refresh tokens are single-use (reusing one
-revokes the grant), so renewals are serialised per session and never retried.
+`PublisherAccounts` (`app/accounts.py`) wraps the `SocialPublisher`
+implementation (`BufferClient`) and keeps a single, server-wide profile cache
+(`BUFFER_PROFILES_CACHE_SECONDS`); every session sees the same account and
+profiles. Its `status()` never raises: it reports *not configured*,
+*connected* (with profiles, or with an outage message) or *rejected*.
 
-Errors at every step (`error=access_denied`, missing/forged/expired state,
-code exchange failure) redirect home with a flash toast. A token Buffer later
-rejects (401/403) is deleted automatically and the page reloads into the
-"Connect Buffer" state.
+If Buffer rejects the key (HTTP 401/403 or a GraphQL `UNAUTHORIZED` /
+`UNAUTHENTICATED` error) the cache is dropped and the UI shows "Buffer rejected
+the configured access token. Check BUFFER_ACCESS_TOKEN (Buffer -> Settings ->
+API)." with a "Buffer unavailable · Retry" button (navbar) and a "Retry Buffer"
+button (schedule panel), both linking to `/buffer/refresh`. Nothing is deleted;
+the error persists until the key is fixed on the server.
 
 ## 9. Scheduling flow
 
@@ -295,8 +302,8 @@ sequenceDiagram
     participant V as validate_schedule
     participant P as PublisherAccounts
     participant BF as Buffer
-    R->>P: token(session) (401 toast if missing)
-    R->>P: profiles(session) (cached)
+    R->>P: publisher configured? (503 toast if BUFFER_ACCESS_TOKEN unset)
+    R->>P: profiles() (cached, shared by all sessions)
     R->>V: caption, hashtags, profile_ids, mode, scheduled_for, timezone
     alt invalid
         V-->>R: field errors
@@ -317,28 +324,32 @@ Only connection failures that happened *before* the request was sent are
 retried when posting, so a retry can never create a duplicate post. Channels
 are independent: if Buffer refuses some of them, the others are still sent and
 the toast names the refused ones; only when every channel fails is it an error.
+A rejected key aborts the request with a `502` toast and clears the profile
+cache.
 
 ## 10. Security model
 
 ```mermaid
 flowchart LR
     subgraph browser[Browser - untrusted]
-        cookie[signed session cookie<br/>sid + CSRF token only<br/>HttpOnly, SameSite=Lax, Secure in prod]
+        cookie[signed session cookie<br/>sid + CSRF token + flash only<br/>HttpOnly, SameSite=Lax, Secure in prod]
     end
     subgraph server[Server - trusted]
         csrf[CSRF check on every<br/>POST/PATCH/DELETE]
-        state[OAuth state<br/>single-use, TTL]
-        vault[(Fernet-encrypted<br/>OAuth tokens)]
-        secrets[Env / Docker secrets<br/>SecretStr]
+        secrets[Env / Docker secrets<br/>SecretStr: OLLAMA_API_KEY,<br/>BUFFER_ACCESS_TOKEN]
+        publish[POST /buffer/schedule]
         uploads[Upload pipeline<br/>validate + re-encode]
         rl[Rate limiter]
         csp[CSP + security headers]
     end
     cookie --> csrf
-    cookie --> state
-    csrf --> vault
-    secrets --> vault
+    csrf --> publish
+    secrets --> publish
 ```
+
+The app has no user accounts: anyone who can reach it can publish with the
+configured Buffer key, so public deployments belong behind access control at
+the proxy (basic auth, SSO, IP allow-list).
 
 See [SECURITY.md](SECURITY.md) for the full threat model and controls.
 
@@ -347,11 +358,11 @@ See [SECURITY.md](SECURITY.md) for the full threat model and controls.
 | Table | Key | Content |
 |---|---|---|
 | `drafts` | `id`, indexed by `(session_id, created_at)` | Draft JSON document (labels, keywords, caption, hashtags, publish record) |
-| `oauth_tokens` | `(session_id, provider)` | Fernet ciphertext of the token JSON |
 
 A background task (hourly) deletes drafts untouched for
-`DRAFT_RETENTION_HOURS` together with their images, and tokens older than the
-session lifetime.
+`DRAFT_RETENTION_HOURS` together with their images. The `oauth_tokens` table
+used by older versions (per-session Buffer OAuth tokens) is dropped on startup
+so their refresh tokens do not linger.
 
 ## 12. Extensibility
 
@@ -366,12 +377,16 @@ session lifetime.
 ## 13. Key design decisions
 
 1. **Server-side drafts.** Uploaded images and generated copy are persisted per
-   session, so the full-page OAuth redirect to Buffer never loses work and
+   session, so a reload or a Buffer outage never loses work and
    every request references a `draft_id` instead of trusting client-supplied
    image URLs or labels.
-2. **Tokens never in the cookie.** The original design kept the Buffer token in
-   a signed cookie; signed is not encrypted. Tokens are now encrypted at rest
-   and the cookie carries only an opaque session id.
+2. **One server-wide Buffer key.** The original design kept a per-visitor Buffer
+   token in a signed cookie (signed is not encrypted); a later version used
+   per-session OAuth tokens encrypted at rest. Buffer now authenticates with a
+   single personal API key held in server configuration, so no Buffer
+   credential is ever stored per session or sent to the browser, and the cookie
+   carries only an opaque session id. The trade-off: every visitor shares that
+   Buffer account, so access to the app must be controlled in front of it.
 3. **Vendored front-end assets.** Bootstrap and HTMX are served from `/static`
    so the CSP can forbid every third-party script and the app works offline.
 4. **Graceful degradation.** Vision failures fall back to manual keywords, Buffer

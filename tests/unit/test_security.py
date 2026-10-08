@@ -1,27 +1,17 @@
 from __future__ import annotations
 
-import re
-import time
 from typing import Any
 
 import pytest
-from cryptography.fernet import Fernet
 from starlette.requests import Request
 
-from app.errors import CSRFError, OAuthStateError
+from app.errors import CSRFError
 from app.security import (
     CSRF_KEY,
-    OAUTH_STATE_KEY,
-    OAUTH_STATE_TTL_SECONDS,
     SESSION_ID_KEY,
-    TokenCipher,
-    TokenDecryptionError,
     add_flash,
-    consume_oauth_state,
     ensure_session,
     get_csrf_token,
-    issue_oauth_state,
-    pkce_verifier,
     pop_flashes,
     verify_csrf,
 )
@@ -91,51 +81,6 @@ class TestCsrf:
             await verify_csrf(make_request(method="POST", session=session, headers=headers))
 
 
-class TestOAuthState:
-    def test_roundtrip_is_single_use(self) -> None:
-        request = make_request(session={})
-        state = issue_oauth_state(request)
-        assert consume_oauth_state(request, state) == state
-        assert OAUTH_STATE_KEY not in request.session
-        with pytest.raises(OAuthStateError):
-            consume_oauth_state(request, state)
-
-    def test_mismatch(self) -> None:
-        request = make_request(session={})
-        issue_oauth_state(request)
-        with pytest.raises(OAuthStateError):
-            consume_oauth_state(request, "forged")
-
-    def test_missing_received_state(self) -> None:
-        request = make_request(session={})
-        issue_oauth_state(request)
-        with pytest.raises(OAuthStateError):
-            consume_oauth_state(request, None)
-
-    def test_expired(self) -> None:
-        issued = int(time.time()) - OAUTH_STATE_TTL_SECONDS - 5
-        request = make_request(session={OAUTH_STATE_KEY: {"value": "s", "issued_at": issued}})
-        with pytest.raises(OAuthStateError, match="expired"):
-            consume_oauth_state(request, "s")
-
-    @pytest.mark.parametrize(
-        "stored", ["string", {"value": 1, "issued_at": 1}, {"value": "s", "issued_at": "x"}]
-    )
-    def test_malformed_stored_state(self, stored: object) -> None:
-        request = make_request(session={OAUTH_STATE_KEY: stored})
-        with pytest.raises(OAuthStateError):
-            consume_oauth_state(request, "s")
-
-    def test_pkce_verifier_is_derived_from_state_and_secret(self) -> None:
-        verifier = pkce_verifier("state-1", secret="secret-a")
-        assert verifier == pkce_verifier("state-1", secret="secret-a")  # no storage needed
-        assert verifier != pkce_verifier("state-2", secret="secret-a")
-        assert verifier != pkce_verifier("state-1", secret="secret-b")
-        # RFC 7636: 43-128 characters from the unreserved set.
-        assert len(verifier) == 43
-        assert re.fullmatch(r"[A-Za-z0-9\-._~]+", verifier)
-
-
 class TestFlash:
     def test_queue_and_pop(self) -> None:
         request = make_request(session={})
@@ -151,21 +96,3 @@ class TestFlash:
         request = make_request(session={"flash": "garbage"})
         add_flash(request, "success", "fresh")
         assert pop_flashes(request) == [{"level": "success", "message": "fresh"}]
-
-
-class TestTokenCipher:
-    def test_derived_key_roundtrip_and_determinism(self) -> None:
-        one = TokenCipher.from_secrets(session_secret="a" * 40)
-        two = TokenCipher.from_secrets(session_secret="a" * 40)
-        ciphertext = one.encrypt("token-value")
-        assert b"token-value" not in ciphertext
-        assert two.decrypt(ciphertext) == "token-value"
-
-    def test_explicit_key_and_wrong_key(self) -> None:
-        key = Fernet.generate_key().decode()
-        cipher = TokenCipher.from_secrets(session_secret="a" * 40, explicit_key=key)
-        other = TokenCipher.from_secrets(session_secret="a" * 40)
-        with pytest.raises(TokenDecryptionError):
-            other.decrypt(cipher.encrypt("x"))
-        with pytest.raises(TokenDecryptionError):
-            cipher.decrypt(b"not-a-token")

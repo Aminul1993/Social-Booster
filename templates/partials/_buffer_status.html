@@ -1,7 +1,7 @@
 {% from "partials/_icons.html" import icon %}
 <div class="buffer-status d-flex align-items-center gap-2" id="buffer-status">
 {% if not publisher.configured %}
-    <span class="badge rounded-pill text-bg-secondary" title="Set BUFFER_CLIENT_ID and BUFFER_CLIENT_SECRET">
+    <span class="badge rounded-pill text-bg-secondary" title="Set BUFFER_ACCESS_TOKEN">
         {{ publisher.display_name }} not configured
     </span>
 {% elif publisher.connected %}
@@ -32,19 +32,15 @@
             {% endfor %}
             <div class="dropdown-divider"></div>
             <a class="dropdown-item d-flex align-items-center gap-2" href="/buffer/refresh">{{ icon("refresh") }} Refresh profiles</a>
-            <button type="button" class="dropdown-item d-flex align-items-center gap-2 text-danger"
-                    hx-post="/buffer/disconnect" hx-swap="none"
-                    hx-confirm="Disconnect Buffer? You can reconnect at any time.">
-                {{ icon("log-out") }} Disconnect
-            </button>
         </div>
     </div>
 {% else %}
     {% if publisher.error %}
         <span class="small text-danger d-none d-lg-inline">{{ publisher.error }}</span>
     {% endif %}
-    <a href="/buffer/auth" class="btn btn-sm btn-primary d-flex align-items-center gap-2">
-        {{ icon("link") }} Connect {{ publisher.display_name }}
+    <a href="/buffer/refresh" class="btn btn-sm btn-outline-danger d-flex align-items-center gap-2"
+       title="Retry with the configured BUFFER_ACCESS_TOKEN">
+        {{ icon("refresh") }} {{ publisher.display_name }} unavailable · Retry
     </a>
 {% endif %}
 </div>

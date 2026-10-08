@@ -20,7 +20,7 @@ pages and toasts for unexpected errors show the same id as "Reference".
 | Symptom | Cause | Fix |
 |---|---|---|
 | Toast "Your session could not be verified" (403) | CSRF token missing/stale - usually the server restarted with an ephemeral dev secret, or cookies are blocked | Reload the page. Set a fixed `SESSION_SECRET` in development. |
-| Logged out / Buffer disconnected after every restart | No `SESSION_SECRET` in development | Set one in `.env`. |
+| Logged out / drafts gone after every restart | No `SESSION_SECRET` in development | Set one in `.env`. |
 | Cookies not stored on plain `http://` in production | `COOKIE_SECURE` defaults to `true` in production | Serve over HTTPS (recommended) or set `COOKIE_SECURE=false` for an internal test only. |
 | `429 Too many requests` | Rate limit reached | Wait `Retry-After` seconds or raise `RATE_LIMIT_*`. Behind a proxy, set `FORWARDED_ALLOW_IPS` so clients are not all seen as the proxy's IP. |
 | Browser console shows CSP errors | A browser extension or custom template code adds inline styles/scripts | The app itself uses no inline code. Move custom code into `static/`. |
@@ -53,14 +53,13 @@ pages and toasts for unexpected errors show the same id as "Reference".
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `invalid_client` when connecting Buffer | The client was registered under Buffer's Settings -> API, but `BUFFER_OAUTH_URL`/`BUFFER_TOKEN_URL` still point at the retired `bufferapp.com` v1 endpoints (the app logs a warning at start-up), or the id/secret are wrong | Unset `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_PROFILES_URL`, `BUFFER_POST_URL` (defaults: `auth.buffer.com`, `api.buffer.com`) and re-check `BUFFER_CLIENT_ID`/`BUFFER_CLIENT_SECRET`. |
-| Buffer shows "redirect_uri mismatch" | `BUFFER_REDIRECT_URI` differs from the app registration | Make them identical, including scheme, host, port and path. |
-| "The authorization response could not be verified" | Callback opened in another browser, after > 10 minutes, or twice | Click "Connect Buffer" again in the same browser. |
-| "Buffer rejected the authorization code" | Code already used/expired, wrong client secret | Reconnect; check `BUFFER_CLIENT_SECRET`. |
-| "Buffer rejected the access token. Please connect Buffer again." | Token revoked in Buffer | The token was removed automatically; reconnect. |
-| Post scheduled but without the image / Buffer error about media | Buffer cannot download `localhost` URLs | Set `PUBLIC_BASE_URL` to a public https origin (tunnel locally). The UI warns when the URL is not public. |
-| "No social profiles found" | The Buffer account has no connected channels | Add channels in Buffer, then use "Refresh profiles" in the navbar menu. |
-| Buffer API errors on every call | Your Buffer plan/app has no access to the publish API, or the endpoints moved | Check the Buffer developer settings; every endpoint URL is configurable (`BUFFER_*_URL`). Use `scripts/mock_upstreams.py` to verify the app side independently. |
+| Grey "Buffer not configured" badge; toast "Buffer is not configured on this server." (503) when scheduling; readiness `buffer: not_configured` | `BUFFER_ACCESS_TOKEN` is empty or not visible to the app process | Create a key in Buffer (Settings -> API -> Create API key), set `BUFFER_ACCESS_TOKEN` in `.env`, the environment or `/run/secrets/buffer_access_token`, and restart. |
+| "Buffer rejected the configured access token. Check BUFFER_ACCESS_TOKEN (Buffer -> Settings -> API)." (navbar "Buffer unavailable · Retry", `502` toast when scheduling) | Buffer answered 401/403 or GraphQL `UNAUTHORIZED`/`UNAUTHENTICATED`: the key was revoked or deleted in Buffer, mistyped, truncated, or copied with surrounding whitespace/quotes | Copy the key again (or create a new one), update `BUFFER_ACCESS_TOKEN`, restart, then click "Retry". |
+| Start-up warning "BUFFER_API_URL points at Buffer's retired v1 API (bufferapp.com)" | `BUFFER_API_URL` left over from an older `.env` | Unset it (default `https://api.buffer.com`). The old OAuth settings (client credentials, `BUFFER_REDIRECT_URI`, `BUFFER_OAUTH_URL`, `BUFFER_TOKEN_URL`, `BUFFER_SCOPE`, `TOKEN_ENCRYPTION_KEY`) are ignored and can be deleted. |
+| Post scheduled but without the image / Buffer error about media | Buffer cannot download `localhost` URLs, or access control in front of the app also blocks `/uploads/*` | Set `PUBLIC_BASE_URL` to a public https origin (tunnel locally) and keep `/uploads/*` reachable without credentials. The UI warns when the URL is not public. |
+| "No social profiles found" | The Buffer account behind the key has no connected channels | Add channels in Buffer, then use "Refresh profiles" in the navbar menu (the profile list is cached for `BUFFER_PROFILES_CACHE_SECONDS`). |
+| Profiles of the wrong Buffer account | The key belongs to another Buffer account (it always acts for the account that created it) | Create the key while signed in to the right account. |
+| Buffer API errors on every call | Your Buffer plan has no access to the API, or the endpoint moved | Check Buffer's API settings; the endpoint URL is configurable (`BUFFER_API_URL`). Use `scripts/mock_upstreams.py` to verify the app side independently. |
 | Wrong scheduled time | Times are entered in the browser's timezone (shown next to the field) and converted to UTC | Verify the timezone label; the card shows the scheduled time in your local time. |
 
 ## Storage and database

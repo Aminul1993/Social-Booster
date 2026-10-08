@@ -16,8 +16,6 @@ from app.main import create_app
 from services.vision import ImageDescriber
 from tests.helpers import (
     BUFFER_API_URL,
-    BUFFER_OAUTH_URL,
-    BUFFER_TOKEN_URL,
     OLLAMA_URL,
     AppClient,
     FakeDescriber,
@@ -52,11 +50,8 @@ def settings_factory(tmp_path: Path) -> SettingsFactory:
             "ollama_endpoint": OLLAMA_URL,
             "ollama_model": "test-model",
             "ollama_max_retries": 2,
-            "buffer_client_id": "client-id",
-            "buffer_client_secret": "client-secret",
-            "buffer_redirect_uri": "http://testserver/buffer/callback",
-            "buffer_oauth_url": BUFFER_OAUTH_URL,
-            "buffer_token_url": BUFFER_TOKEN_URL,
+            # No BUFFER_ACCESS_TOKEN: a configured Buffer is called on every page
+            # load, so Buffer tests opt in with app_factory(buffer_access_token=...).
             "buffer_api_url": BUFFER_API_URL,
             "buffer_max_retries": 1,
             "rate_limit_enabled": False,

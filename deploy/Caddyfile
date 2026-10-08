@@ -1,8 +1,19 @@
 # Reverse proxy with automatic HTTPS (Let's Encrypt) in front of the app.
-# Set DOMAIN to your public host name; PUBLIC_BASE_URL and BUFFER_REDIRECT_URI
-# in .env must use the same https://DOMAIN origin.
+# Set DOMAIN to your public host name; PUBLIC_BASE_URL in .env must use the
+# same https://DOMAIN origin.
+#
+# The app has no login of its own: anyone who can open it publishes to the
+# Buffer account behind BUFFER_ACCESS_TOKEN. Restrict access (basic auth, an
+# SSO/forward-auth proxy or an IP allow-list), but keep /uploads/* open so
+# Buffer can download the post images - see the commented example below.
 {$DOMAIN} {
 	encode zstd gzip
+
+	# Basic auth for everything except /uploads/* (hash: `caddy hash-password`):
+	# @protected not path /uploads/*
+	# basic_auth @protected {
+	# 	marketer <bcrypt-hash>
+	# }
 
 	request_body {
 		max_size 110MB

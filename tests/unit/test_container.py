@@ -10,14 +10,13 @@ import pytest
 
 from app.container import build_container
 from app.models import Draft
-from services.publishing import OAuthToken
 from tests.conftest import SettingsFactory
 from tests.helpers import FakeDescriber, make_image
 
 
 async def test_run_maintenance_purges_expired_data(settings_factory: SettingsFactory) -> None:
     container = build_container(
-        settings_factory(draft_retention_hours=1, session_max_age_seconds=3600),
+        settings_factory(draft_retention_hours=1),
         describer=FakeDescriber(),
     )
     await container.database.connect()
@@ -38,17 +37,11 @@ async def test_run_maintenance_purges_expired_data(settings_factory: SettingsFac
             updated_at=old,
         )
         await container.drafts._repo.add(draft)
-        await container.tokens.save("s", "buffer", OAuthToken(access_token="t"))
-        await container.database.conn.execute(
-            "UPDATE oauth_tokens SET updated_at = ?", (old.isoformat(),)
-        )
-        await container.database.conn.commit()
 
         await container.run_maintenance()
 
         assert await container.drafts._repo.count_for_session("s") == 0
         assert not await container.storage.exists(stored.key)
-        assert await container.tokens.get("s", "buffer") is None
     finally:
         await container.aclose()
 

@@ -20,13 +20,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from services.buffer import (
-    DEFAULT_API_URL,
-    DEFAULT_OAUTH_URL,
-    DEFAULT_SCOPE,
-    DEFAULT_TOKEN_URL,
-    is_legacy_url,
-)
+from services.buffer import DEFAULT_API_URL, is_legacy_url
 from services.ollama import DEFAULT_ENDPOINT, DEFAULT_MODEL
 from services.vision import DEFAULT_VISION_MODEL
 
@@ -64,7 +58,7 @@ class RateLimitRule:
         return cls(requests=requests, period_seconds=_PERIODS[match.group(2).lower()])
 
 
-RateLimitScope = Literal["upload", "generate", "schedule", "auth", "default"]
+RateLimitScope = Literal["upload", "generate", "schedule", "default"]
 
 
 def _resolve_path(path: Path) -> Path:
@@ -104,7 +98,6 @@ class Settings(BaseSettings):
     session_cookie_name: str = "mab_session"
     session_max_age_seconds: int = Field(default=14 * 24 * 3600, ge=300)
     cookie_secure: bool | None = None
-    token_encryption_key: SecretStr | None = None
 
     # ------------------------------------------------------------- persistence
     database_path: Path = Path("data/app.db")
@@ -143,13 +136,9 @@ class Settings(BaseSettings):
     hashtags_max: int = Field(default=8, ge=1, le=30)
 
     # ------------------------------------------------------------------- Buffer
-    buffer_client_id: str | None = None
-    buffer_client_secret: SecretStr | None = None
-    buffer_redirect_uri: str = "http://localhost:8000/buffer/callback"
-    buffer_oauth_url: str = DEFAULT_OAUTH_URL
-    buffer_token_url: str = DEFAULT_TOKEN_URL
+    # Personal API key (Buffer -> Settings -> API); every visitor posts with it.
+    buffer_access_token: SecretStr | None = None
     buffer_api_url: str = DEFAULT_API_URL
-    buffer_scope: str = DEFAULT_SCOPE
     buffer_timeout_seconds: float = Field(default=20.0, gt=0)
     buffer_max_retries: int = Field(default=3, ge=1, le=10)
     buffer_profiles_cache_seconds: int = Field(default=300, ge=0)
@@ -159,7 +148,6 @@ class Settings(BaseSettings):
     rate_limit_upload: str = "20/minute"
     rate_limit_generate: str = "30/minute"
     rate_limit_schedule: str = "20/minute"
-    rate_limit_auth: str = "10/minute"
     rate_limit_default: str = "120/minute"
 
     # ------------------------------------------------------------ observability
@@ -175,11 +163,9 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "buffer_client_id",
         "public_base_url",
         "ollama_api_key",
-        "buffer_client_secret",
-        "token_encryption_key",
+        "buffer_access_token",
         "metrics_token",
         "session_secret",
         "vision_endpoint",
@@ -205,7 +191,6 @@ class Settings(BaseSettings):
         "rate_limit_upload",
         "rate_limit_generate",
         "rate_limit_schedule",
-        "rate_limit_auth",
         "rate_limit_default",
     )
     @classmethod
@@ -234,17 +219,10 @@ class Settings(BaseSettings):
         elif self.session_secret is None:
             # Development convenience: an ephemeral secret (sessions reset on restart).
             self.session_secret = SecretStr(secrets.token_urlsafe(48))
-        legacy = [
-            name.upper()
-            for name in ("buffer_oauth_url", "buffer_token_url", "buffer_api_url")
-            if is_legacy_url(getattr(self, name))
-        ]
-        if legacy:
+        if is_legacy_url(self.buffer_api_url):
             logger.warning(
-                "%s point at Buffer's retired v1 API (bufferapp.com), which answers clients "
-                "from Buffer's Settings -> API with invalid_client; unset them to use the "
-                "defaults",
-                ", ".join(legacy),
+                "BUFFER_API_URL points at Buffer's retired v1 API (bufferapp.com), which does "
+                "not accept API keys from Buffer's Settings -> API; unset it to use the default"
             )
         return self
 

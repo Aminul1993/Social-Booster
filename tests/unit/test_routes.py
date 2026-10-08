@@ -34,7 +34,7 @@ class TestIndex:
         html = response.text
         assert '<meta name="htmx-config"' in html
         assert "vendor/htmx/htmx.min.js?v=1.0.0" in html
-        assert "Connect Buffer" in html
+        assert "Buffer not configured" in html
         assert "No drafts yet" in html
         headers = response.headers
         assert headers["Cache-Control"] == "no-store"
@@ -68,7 +68,7 @@ class TestIndex:
             ollama_api_key=None,
             ollama_endpoint="https://ollama.com/v1/chat/completions",
             vision_backend="disabled",
-            buffer_client_id=None,
+            buffer_access_token=None,
         )
         async with make_client(app) as client:
             html = (await client.get("/")).text
@@ -105,7 +105,7 @@ class TestCsrf:
 
     async def test_wrong_token_browser(self, client: AppClient) -> None:
         response = await client.http.post(
-            "/buffer/disconnect", headers={"X-CSRF-Token": "forged", "Accept": "text/html"}
+            "/buffer/schedule", headers={"X-CSRF-Token": "forged", "Accept": "text/html"}
         )
         assert response.status_code == 403
         assert "<h1" in response.text
@@ -116,7 +116,7 @@ class TestCsrf:
         client.http.cookies.clear()
         await client.http.get("/")
         response = await client.http.post(
-            "/buffer/disconnect", headers={"X-CSRF-Token": other_token, "HX-Request": "true"}
+            "/buffer/schedule", headers={"X-CSRF-Token": other_token, "HX-Request": "true"}
         )
         assert response.status_code == 403
 
@@ -236,7 +236,13 @@ class TestOps:
         assert checks["storage"]["status"] == "ok"
         assert checks["vision"]["status"] == "ok"
         assert checks["ollama"]["status"] == "configured"
-        assert checks["buffer"]["status"] == "configured"
+        assert checks["buffer"]["status"] == "not_configured"
+
+    async def test_ready_reports_configured_buffer(self, app_factory: AppFactory) -> None:
+        async with make_raw_client(app_factory(buffer_access_token="key")) as http:
+            body = (await http.get("/health/ready")).json()
+        assert body["status"] == "ok"  # readiness never calls Buffer
+        assert body["checks"]["buffer"]["status"] == "configured"
 
     async def test_ready_storage_and_db_failure(
         self, client: AppClient, monkeypatch: pytest.MonkeyPatch

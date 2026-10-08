@@ -20,21 +20,24 @@ for every interaction, styled with **Bootstrap 5**. No front-end build step.
 
 ## Highlights
 
-* **Server-side AI only** - API keys and OAuth tokens never reach the browser;
-  Buffer tokens are encrypted at rest; the cookie holds just a signed session id.
-* **Secure by default** - CSRF tokens, single-use OAuth `state`, strict CSP (no
+* **Server-side AI only** - the Ollama and Buffer API keys never reach the
+  browser; the cookie holds just a signed session id.
+* **Secure by default** - CSRF tokens, strict CSP (no
   inline code, HTMX eval disabled), upload validation with magic-byte sniffing
   and re-encoding (EXIF/GPS stripped), rate limiting, body-size limits,
   security headers.
 * **Resilient integrations** - retries with back-off and `Retry-After`,
   structured parsing of model output with a repair turn, graceful degradation
   when the vision model or Buffer is unavailable.
-* **Drafts persist** per session, so the OAuth round trip to Buffer never loses
-  work.
+* **Drafts persist** per session, so a page reload or a Buffer outage never
+  loses work.
+* **One Buffer account** - a single personal API key (`BUFFER_ACCESS_TOKEN`)
+  posts for every visitor. The app has no login of its own, so put a public
+  deployment behind access control (see [Security](docs/SECURITY.md)).
 * **Production tooling** - Pydantic Settings, JSON logs with request ids,
   `/health`, `/health/ready`, Prometheus `/metrics`, multi-stage Docker image
   (non-root, read-only, weights baked in), Gunicorn, Caddy TLS profile, CI,
-  pre-commit, Ruff, Black, strict mypy, 375 tests at 98.8 % coverage.
+  pre-commit, Ruff, Black, strict mypy, 401 tests at 98.9 % coverage.
 
 ## Quick start
 
@@ -44,7 +47,7 @@ for every interaction, styled with **Bootstrap 5**. No front-end build step.
 cd Social-Booster
 cp .env.example .env
 #   SESSION_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
-#   OLLAMA_API_KEY=...   BUFFER_CLIENT_ID=...   BUFFER_CLIENT_SECRET=...
+#   OLLAMA_API_KEY=...   BUFFER_ACCESS_TOKEN=...  (Buffer -> Settings -> API)
 #   COOKIE_SECURE=false  (only while testing over plain http://localhost)
 docker compose up -d --build
 open http://localhost:8000
@@ -67,7 +70,7 @@ python scripts/mock_upstreams.py --port 8020
 ```
 
 and point `OLLAMA_*`/`BUFFER_*` at it (see [docs/SETUP.md](docs/SETUP.md#running-without-ollamabuffer-accounts)).
-The full flow - including the OAuth consent screen - works offline.
+The full flow - including scheduling to mock Buffer profiles - works offline.
 
 ## How it works
 
@@ -84,8 +87,7 @@ sequenceDiagram
     U->>A: POST /generate (keywords, tone)
     A->>O: chat completion (JSON copy)
     A-->>U: card with caption + hashtags
-    U->>A: GET /buffer/auth -> consent -> /buffer/callback
-    A->>B: exchange code, list profiles
+    A->>B: list profiles (Bearer BUFFER_ACCESS_TOKEN, cached)
     U->>A: POST /buffer/schedule (profiles, time)
     A->>B: create update (text + image URL + scheduled_at)
     A-->>U: card with publish summary
@@ -101,10 +103,10 @@ essentials:
 | Variable | Purpose |
 |---|---|
 | `ENVIRONMENT` | `production` enforces secure cookies, HSTS, hidden API docs, a strong `SESSION_SECRET` |
-| `SESSION_SECRET` | signs session cookies, derives the token-encryption key |
+| `SESSION_SECRET` | signs session cookies |
 | `PUBLIC_BASE_URL` | public origin; Buffer downloads images from it |
 | `OLLAMA_API_KEY`, `OLLAMA_ENDPOINT`, `OLLAMA_MODEL` | AI copywriting |
-| `BUFFER_CLIENT_ID`, `BUFFER_CLIENT_SECRET`, `BUFFER_REDIRECT_URI` | Buffer OAuth app |
+| `BUFFER_ACCESS_TOKEN` | Buffer personal API key, shared by every visitor |
 | `VISION_BACKEND`, `VISION_MODEL` | `ollama` (online vision model, default `gemma4:31b`) or `disabled` |
 
 Full reference: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
@@ -118,9 +120,7 @@ Full reference: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 | POST | `/generate` | AI caption + hashtags for a draft |
 | PATCH | `/drafts/{id}` | autosave caption/hashtag edits |
 | DELETE | `/drafts/{id}` | delete a draft and its image |
-| GET | `/buffer/auth`, `/buffer/callback` | Buffer OAuth 2 |
 | GET | `/buffer/refresh` | reload Buffer profiles |
-| POST | `/buffer/disconnect` | forget the Buffer token |
 | POST | `/buffer/schedule` | schedule / queue / share now |
 | GET | `/health`, `/health/ready`, `/metrics` | operations |
 
@@ -130,7 +130,7 @@ Request/response details: [docs/API.md](docs/API.md); interactive docs at
 ## Development
 
 ```bash
-pytest                                      # 375 tests, coverage gate 90 %
+pytest                                      # 401 tests, coverage gate 90 %
 ruff check . && black --check .             # lint + format
 mypy app services tests scripts gunicorn.conf.py   # strict typing
 pre-commit run --all-files                  # from the repository root
@@ -140,9 +140,9 @@ pre-commit run --all-files                  # from the repository root
 
 | Guide | |
 |---|---|
-| [Setup](docs/SETUP.md) | local installation, Buffer app registration, mocks, tooling |
+| [Setup](docs/SETUP.md) | local installation, Buffer API key, mocks, tooling |
 | [Deployment](docs/DEPLOYMENT.md) | Docker, Compose + Caddy TLS, Gunicorn, sizing, backups, CI/CD |
-| [Architecture](docs/ARCHITECTURE.md) | layers, HTMX flow, templates, AI/vision/OAuth/scheduling flows |
+| [Architecture](docs/ARCHITECTURE.md) | layers, HTMX flow, templates, AI/vision/Buffer/scheduling flows |
 | [API](docs/API.md) | endpoints, headers, status codes |
 | [Environment](docs/ENVIRONMENT.md) | every configuration variable |
 | [Security](docs/SECURITY.md) | threat model and controls |
@@ -156,7 +156,7 @@ app/        FastAPI app: routes, DI, security, middleware, workflow services, pe
 services/   framework-agnostic adapters: vision, ollama, buffer, storage, images
 templates/  Jinja2 pages and HTMX fragments
 static/     CSS, JS, vendored Bootstrap 5.3.8 + HTMX 2.0.11
-tests/      unit/ and integration/ (upload, OAuth, generation, scheduling)
+tests/      unit/ and integration/ (upload, Buffer, generation, scheduling)
 docs/       guides
 scripts/    model pre-download, mock upstreams
 deploy/     Caddyfile

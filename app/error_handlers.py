@@ -18,7 +18,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.errors import AppError, ToastLevel, is_htmx, toast_header, wants_json
 from app.logging_config import request_id_ctx
-from app.security import add_flash
 from app.templating import templates
 from services.errors import (
     OllamaAuthError,
@@ -77,7 +76,7 @@ def map_service_error(exc: ServiceError) -> tuple[int, str]:
         status = 503 if exc.retryable else 502
         return status, f"{exc.message} Please try again."
     if isinstance(exc, PublisherAuthError):
-        return 401, exc.message
+        return 502, exc.message
     if isinstance(exc, PublisherAPIError):
         return 502, exc.message
     if isinstance(exc, PublisherError):
@@ -112,10 +111,6 @@ async def handle_service_error(request: Request, exc: Exception) -> Response:
             "upstream_status": exc.status_code,
         },
     )
-    if isinstance(exc, PublisherAuthError) and is_htmx(request):
-        # The stored token was dropped; reload so the UI shows "Connect Buffer".
-        add_flash(request, "danger", message)
-        return Response(status_code=status_code, headers={"HX-Refresh": "true"})
     return error_response(request, status_code=status_code, message=message)
 
 

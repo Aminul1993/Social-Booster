@@ -27,7 +27,7 @@ async def index(
     container: Container,
 ) -> HTMLResponse:
     items = await drafts.list_for_session(session_id)
-    publisher = await accounts.status(session_id)
+    publisher = await accounts.status()
     settings = container.settings
     cards = [build_card(request, container.storage, draft) for draft in items]
     return templates.TemplateResponse(

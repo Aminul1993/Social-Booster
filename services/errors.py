@@ -75,7 +75,7 @@ class PublisherError(ServiceError):
 
 
 class PublisherAuthError(PublisherError):
-    """The provider rejected the OAuth credentials or access token."""
+    """The provider rejected the configured access token."""
 
 
 class PublisherAPIError(PublisherError):

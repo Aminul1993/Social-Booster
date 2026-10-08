@@ -8,10 +8,10 @@ web layer only depends on these types.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 class PublishMode(StrEnum):
@@ -28,39 +28,6 @@ class PublishMode(StrEnum):
             PublishMode.QUEUE: "Add to queue",
             PublishMode.NOW: "Share now",
         }[self]
-
-
-@dataclass(frozen=True, slots=True)
-class OAuthToken:
-    """OAuth credentials for one connected account."""
-
-    access_token: str
-    token_type: str = "bearer"  # noqa: S105 - OAuth token type, not a secret
-    refresh_token: str | None = None
-    expires_at: datetime | None = None
-    scope: str | None = None
-
-    def is_expired(self, *, now: datetime | None = None, leeway: int = 60) -> bool:
-        if self.expires_at is None:
-            return False
-        current = now or datetime.now(UTC)
-        return self.expires_at <= current + timedelta(seconds=leeway)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["expires_at"] = self.expires_at.isoformat() if self.expires_at else None
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> OAuthToken:
-        expires_raw = data.get("expires_at")
-        return cls(
-            access_token=str(data["access_token"]),
-            token_type=str(data.get("token_type") or "bearer"),
-            refresh_token=data.get("refresh_token"),
-            expires_at=datetime.fromisoformat(expires_raw) if expires_raw else None,
-            scope=data.get("scope"),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,25 +99,13 @@ class SocialPublisher(Protocol):
 
     @property
     def configured(self) -> bool:
-        """Whether OAuth client credentials are present."""
+        """Whether the provider credentials are present."""
         ...
 
-    def authorization_url(self, state: str, *, code_verifier: str) -> str:
-        """URL of the provider's consent screen (PKCE challenge from ``code_verifier``)."""
+    async def list_profiles(self) -> list[PublishingProfile]:
+        """Profiles the configured account may post to."""
         ...
 
-    async def exchange_code(self, code: str, *, code_verifier: str) -> OAuthToken:
-        """Exchange an authorization code for an access token."""
-        ...
-
-    async def refresh(self, token: OAuthToken) -> OAuthToken:
-        """Renew an expired access token with its refresh token."""
-        ...
-
-    async def list_profiles(self, token: OAuthToken) -> list[PublishingProfile]:
-        """Profiles the token may post to."""
-        ...
-
-    async def publish(self, token: OAuthToken, post: PostRequest) -> PublishResult:
+    async def publish(self, post: PostRequest) -> PublishResult:
         """Create (or schedule) the post."""
         ...

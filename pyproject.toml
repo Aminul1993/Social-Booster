@@ -29,7 +29,6 @@ dependencies = [
     "pydantic-settings>=2.15",
     "python-dotenv>=1.2",
     "aiosqlite>=0.22",
-    "cryptography>=50",
     "prometheus-client>=0.26",
     "tzdata>=2026.5",
     "pillow>=12.3",

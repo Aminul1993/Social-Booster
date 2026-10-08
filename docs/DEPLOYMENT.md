@@ -10,10 +10,12 @@ no ML runtime in the image.
 - [ ] `ENVIRONMENT=production`
 - [ ] `SESSION_SECRET` - 32+ random characters (the app refuses to start otherwise)
 - [ ] `PUBLIC_BASE_URL=https://your-domain` - Buffer fetches images from it
-- [ ] `BUFFER_REDIRECT_URI=https://your-domain/buffer/callback` (also registered in the Buffer app)
 - [ ] `ALLOWED_HOSTS=your-domain`
 - [ ] TLS terminated in front of the app; `COOKIE_SECURE` left at its default (`true`)
-- [ ] `OLLAMA_API_KEY`, `BUFFER_CLIENT_ID`, `BUFFER_CLIENT_SECRET` set (env or `/run/secrets`)
+- [ ] `OLLAMA_API_KEY`, `BUFFER_ACCESS_TOKEN` set (env or `/run/secrets`)
+- [ ] Access control in front of the app (basic auth, SSO proxy or IP allow-list):
+      the app has no login and anyone who can open it publishes to the Buffer
+      account behind `BUFFER_ACCESS_TOKEN` (see [Access control](#access-control))
 - [ ] Persistent volumes for `/app/uploads` and `/app/data`; backups scheduled
 - [ ] `/metrics` protected (`METRICS_TOKEN`) or not exposed publicly
 - [ ] `FORWARDED_ALLOW_IPS` set to the proxy's address (client IPs for rate limiting)
@@ -37,6 +39,16 @@ DOMAIN=social.example.com docker compose --profile tls up -d --build
 The compose file runs the app with a read-only root filesystem, `/tmp` on
 tmpfs, all Linux capabilities dropped, `no-new-privileges`, memory/CPU limits
 and log rotation.
+
+### Access control
+
+Every visitor posts with the one Buffer account configured in
+`BUFFER_ACCESS_TOKEN`, and the app has no user accounts of its own. Unless it
+only listens on a private network, restrict who can reach it at the proxy -
+for example Caddy `basic_auth`, an SSO/forward-auth proxy, or an IP
+allow-list. Leave `/uploads/*` open: Buffer downloads the post images from
+there (file names are random 128-bit keys). A commented `basic_auth` example
+is in `deploy/Caddyfile`.
 
 ## 3. Plain Docker
 
@@ -116,7 +128,7 @@ readinessProbe:
 
 | Path | Content | Backup |
 |---|---|---|
-| `/app/data/app.db` (+ `-wal`, `-shm`) | drafts, encrypted tokens | `sqlite3 app.db ".backup 'backup.db'"` (safe while running) |
+| `/app/data/app.db` (+ `-wal`, `-shm`) | drafts | `sqlite3 app.db ".backup 'backup.db'"` (safe while running) |
 | `/app/uploads` | sanitised images | file-level copy / volume snapshot |
 
 Drafts are working data with a retention window, so backups are mainly to
@@ -131,7 +143,7 @@ balancer:
 2. Implement the `Storage` protocol for object storage (S3/GCS) and serve
    images from it (`public_path` returns the public object URL).
 3. Use a shared rate limiter (Redis, or the load balancer).
-4. Keep `SESSION_SECRET` (and `TOKEN_ENCRYPTION_KEY`) identical on all hosts.
+4. Keep `SESSION_SECRET` (and `BUFFER_ACCESS_TOKEN`) identical on all hosts.
 
 ## 9. CI/CD
 
@@ -150,5 +162,9 @@ to publish images.
 
 1. Build the new image; check the changelog/environment docs for new variables.
 2. `docker compose up -d --build` replaces the container; the schema is created
-   idempotently on start, volumes are preserved.
+   idempotently on start, volumes are preserved. Upgrading from a version that
+   connected Buffer through OAuth: set `BUFFER_ACCESS_TOKEN` and add access
+   control (above). The old OAuth entries (client credentials,
+   `BUFFER_REDIRECT_URI`, `TOKEN_ENCRYPTION_KEY`) are ignored and can be
+   removed; the stored `oauth_tokens` table is dropped on the first start.
 3. Roll back by re-deploying the previous image tag.

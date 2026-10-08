@@ -8,7 +8,7 @@ Modules
 -------
 vision      Image description with an online vision model (Ollama Cloud).
 ollama      Ollama Cloud chat client: retries, parsing, error recovery.
-buffer      Buffer OAuth 2 + profile listing + post scheduling.
+buffer      Buffer API-key auth + profile listing + post scheduling.
 publishing  Provider-neutral contracts so other networks can be added later.
 storage     Upload storage abstraction (local disk implementation).
 images      Upload validation and sanitising (magic bytes, Pillow, EXIF strip).

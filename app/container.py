@@ -12,7 +12,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import httpx
 
@@ -23,8 +23,7 @@ from app.db import Database
 from app.drafts import DraftLimits, DraftService
 from app.metrics import AppMetrics
 from app.rate_limit import RateLimiter
-from app.repositories import DraftRepository, TokenRepository
-from app.security import TokenCipher
+from app.repositories import DraftRepository
 from services.buffer import BufferClient, BufferConfig
 from services.images import ImageProcessor
 from services.ollama import OllamaClient, OllamaConfig
@@ -47,7 +46,6 @@ class ServiceContainer:
     vision: VisionService
     ollama: OllamaClient
     accounts: PublisherAccounts
-    tokens: TokenRepository
     drafts: DraftService
     rate_limiter: RateLimiter
     started_at: float = field(default_factory=time.monotonic)
@@ -83,13 +81,9 @@ class ServiceContainer:
         logger.info("Application stopped")
 
     async def run_maintenance(self) -> None:
-        """Delete expired drafts/images and tokens of expired sessions."""
+        """Delete expired drafts and their images."""
         retention = timedelta(hours=self.settings.draft_retention_hours)
         await self.drafts.purge_expired(retention)
-        session_cutoff = datetime.now(UTC) - timedelta(
-            seconds=self.settings.session_max_age_seconds
-        )
-        await self.tokens.purge_older_than(session_cutoff)
 
     async def _maintenance(self) -> None:
         while True:
@@ -148,26 +142,14 @@ def build_container(
     )
     buffer = BufferClient(
         BufferConfig(
-            client_id=settings.buffer_client_id,
-            client_secret=Settings.secret_value(settings.buffer_client_secret),
-            redirect_uri=settings.buffer_redirect_uri,
-            oauth_url=settings.buffer_oauth_url,
-            token_url=settings.buffer_token_url,
+            access_token=Settings.secret_value(settings.buffer_access_token),
             api_url=settings.buffer_api_url,
-            scope=settings.buffer_scope,
             timeout_seconds=settings.buffer_timeout_seconds,
             retry=RetryPolicy(max_attempts=settings.buffer_max_retries),
         ),
         http,
     )
-    cipher = TokenCipher.from_secrets(
-        session_secret=settings.session_secret_value,
-        explicit_key=Settings.secret_value(settings.token_encryption_key),
-    )
-    tokens = TokenRepository(database, cipher)
-    accounts = PublisherAccounts(
-        buffer, tokens, cache_ttl_seconds=settings.buffer_profiles_cache_seconds
-    )
+    accounts = PublisherAccounts(buffer, cache_ttl_seconds=settings.buffer_profiles_cache_seconds)
     drafts = DraftService(
         repository=DraftRepository(database),
         storage=storage,
@@ -194,7 +176,6 @@ def build_container(
         vision=vision,
         ollama=ollama,
         accounts=accounts,
-        tokens=tokens,
         drafts=drafts,
         rate_limiter=RateLimiter(),
     )

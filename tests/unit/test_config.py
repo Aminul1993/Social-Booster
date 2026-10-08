@@ -26,41 +26,38 @@ class TestDefaults:
         assert settings.database_path == BASE_DIR / "data" / "app.db"
         assert settings.upload_dir == BASE_DIR / "uploads"
         assert settings.ollama_endpoint == "https://ollama.com/v1/chat/completions"
-        assert settings.buffer_oauth_url == "https://auth.buffer.com/auth"
-        assert settings.buffer_token_url == "https://auth.buffer.com/token"
+        assert settings.buffer_access_token is None
         assert settings.buffer_api_url == "https://api.buffer.com"
-        assert settings.buffer_scope == "account:read posts:write offline_access"
         assert settings.vision_backend == "ollama"
         assert settings.vision_model == "gemma4:31b"
         assert settings.vision_endpoint is None  # falls back to OLLAMA_ENDPOINT
         assert settings.vision_api_key is None  # falls back to OLLAMA_API_KEY
 
-    def test_warns_about_legacy_buffer_urls(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_warns_about_legacy_buffer_url(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="app.config"):
-            make(
-                buffer_oauth_url="https://bufferapp.com/oauth2/authorize",
-                buffer_token_url="https://api.bufferapp.com/1/oauth2/token.json",
-            )
-        assert "BUFFER_OAUTH_URL, BUFFER_TOKEN_URL point at Buffer's retired v1 API" in caplog.text
+            make(buffer_api_url="https://api.bufferapp.com/1")
+        assert "BUFFER_API_URL points at Buffer's retired v1 API" in caplog.text
         caplog.clear()
         make()
         assert "retired" not in caplog.text
 
     def test_secrets_are_hidden(self) -> None:
-        settings = make(ollama_api_key="sk-super-secret", buffer_client_secret="bsecret")
+        settings = make(ollama_api_key="sk-super-secret", buffer_access_token="bsecret")
         assert "sk-super-secret" not in repr(settings)
+        assert "bsecret" not in repr(settings)
         assert "bsecret" not in str(settings.model_dump())
+        assert Settings.secret_value(settings.buffer_access_token) == "bsecret"
         assert Settings.secret_value(settings.ollama_api_key) == "sk-super-secret"
         assert Settings.secret_value(None) is None
 
     def test_reads_environment_variables(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OLLAMA_MODEL", "llama3.2:latest")
         monkeypatch.setenv("ALLOWED_HOSTS", "a.example.com, b.example.com")
-        monkeypatch.setenv("BUFFER_CLIENT_ID", "  ")
+        monkeypatch.setenv("BUFFER_ACCESS_TOKEN", "  ")
         settings = make()
         assert settings.ollama_model == "llama3.2:latest"
         assert settings.allowed_hosts == ["a.example.com", "b.example.com"]
-        assert settings.buffer_client_id is None
+        assert settings.buffer_access_token is None
 
     def test_env_example_is_valid(self) -> None:
         settings = Settings(_env_file=BASE_DIR / ".env.example")
@@ -117,9 +114,9 @@ class TestValidation:
             make(hashtags_min=9, hashtags_max=8)
 
     def test_rate_limit_strings(self) -> None:
-        settings = make(rate_limit_upload="5/second", rate_limit_auth=" 3 / hours ")
+        settings = make(rate_limit_upload="5/second", rate_limit_schedule=" 3 / hours ")
         assert settings.rate_limit_rule("upload") == RateLimitRule(5, 1)
-        assert settings.rate_limit_rule("auth") == RateLimitRule(3, 3600)
+        assert settings.rate_limit_rule("schedule") == RateLimitRule(3, 3600)
         with pytest.raises(ValidationError, match="Invalid rate limit"):
             make(rate_limit_generate="lots")
 

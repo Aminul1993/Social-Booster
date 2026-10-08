@@ -1,4 +1,4 @@
-"""Buffer routes: OAuth connect/callback/disconnect and post scheduling."""
+"""Buffer routes: profile refresh and post scheduling."""
 
 from __future__ import annotations
 
@@ -8,11 +8,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from app.dependencies import Accounts, Container, CsrfProtected, Drafts, PublisherToken, SessionId
-from app.errors import OAuthStateError, toast_header
+from app.dependencies import (
+    Accounts,
+    Container,
+    CsrfProtected,
+    Drafts,
+    PublisherConfigured,
+    SessionId,
+)
+from app.errors import toast_header
 from app.models import PublishRecord, ScheduleForm
 from app.rate_limit import rate_limit
-from app.security import add_flash, consume_oauth_state, issue_oauth_state, pkce_verifier
+from app.security import add_flash
 from app.validation import CopyEdit, validate_schedule
 from app.views import absolute_url, build_card, is_publicly_reachable, render_card
 from services.content import compose_post_text
@@ -32,96 +39,16 @@ def _home(request: Request) -> RedirectResponse:
 
 
 @router.get(
-    "/auth",
-    dependencies=[Depends(rate_limit("auth"))],
-    summary="Start Buffer OAuth",
-    description=(
-        "Redirects to Buffer's consent screen with a session-bound `state` and a PKCE "
-        "`code_challenge`."
-    ),
-    response_class=RedirectResponse,
-    status_code=303,
-)
-async def buffer_auth(
-    request: Request, session_id: SessionId, accounts: Accounts, container: Container
-) -> Response:
-    if not accounts.publisher.configured:
-        add_flash(request, "danger", "Buffer is not configured on this server.")
-        return _home(request)
-    state = issue_oauth_state(request)
-    verifier = pkce_verifier(state, secret=container.settings.session_secret_value)
-    url = accounts.publisher.authorization_url(state, code_verifier=verifier)
-    return RedirectResponse(url, status_code=303)
-
-
-@router.get(
-    "/callback",
-    dependencies=[Depends(rate_limit("auth"))],
-    summary="Buffer OAuth callback",
-    description=(
-        "Validates `state`, exchanges `code` for an access token, stores it encrypted "
-        "server-side and redirects to `/` with a flash message."
-    ),
-    response_class=RedirectResponse,
-    status_code=303,
-)
-async def buffer_callback(
-    request: Request,
-    session_id: SessionId,
-    accounts: Accounts,
-    container: Container,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    error_description: str | None = None,
-) -> Response:
-    events = container.metrics.oauth_events
-    provider = accounts.provider
-    try:
-        state = consume_oauth_state(request, state)
-    except OAuthStateError as exc:
-        logger.warning("OAuth state validation failed", extra={"provider": provider})
-        events.labels(provider=provider, outcome="invalid_state").inc()
-        add_flash(request, "danger", exc.message)
-        return _home(request)
-
-    if error:
-        events.labels(provider=provider, outcome="denied").inc()
-        detail = (error_description or error).strip()[:200]
-        add_flash(
-            request,
-            "warning",
-            f"Buffer authorization was not completed{': ' + detail if detail else '.'}",
-        )
-        return _home(request)
-    if not code:
-        events.labels(provider=provider, outcome="missing_code").inc()
-        add_flash(request, "danger", "Buffer did not return an authorization code.")
-        return _home(request)
-
-    verifier = pkce_verifier(state, secret=container.settings.session_secret_value)
-    try:
-        await accounts.connect(session_id, code, code_verifier=verifier)
-    except PublisherError as exc:
-        events.labels(provider=provider, outcome="exchange_failed").inc()
-        logger.warning("OAuth code exchange failed", extra={"error": exc.message})
-        add_flash(request, "danger", exc.message)
-        return _home(request)
-
-    events.labels(provider=provider, outcome="connected").inc()
-    add_flash(request, "success", "Buffer connected. You can now schedule posts.")
-    return _home(request)
-
-
-@router.get(
     "/refresh",
+    # Bypasses the shared profile cache, so it spends the Buffer account's API quota.
+    dependencies=[Depends(rate_limit("default"))],
     summary="Refresh Buffer profiles",
     description="Reloads the connected profiles from Buffer, then redirects to `/`.",
     response_class=RedirectResponse,
     status_code=303,
 )
-async def buffer_refresh(request: Request, session_id: SessionId, accounts: Accounts) -> Response:
-    status = await accounts.status(session_id, refresh=True)
+async def buffer_refresh(request: Request, accounts: Accounts) -> Response:
+    status = await accounts.status(refresh=True)
     if status.error:
         add_flash(request, "danger", status.error)
     elif status.connected:
@@ -130,23 +57,9 @@ async def buffer_refresh(request: Request, session_id: SessionId, accounts: Acco
 
 
 @router.post(
-    "/disconnect",
-    dependencies=[CsrfProtected, Depends(rate_limit("auth"))],
-    summary="Disconnect Buffer",
-    description="Deletes the stored token and asks HTMX to reload the page.",
-)
-async def buffer_disconnect(
-    request: Request, session_id: SessionId, accounts: Accounts
-) -> Response:
-    await accounts.disconnect(session_id)
-    add_flash(request, "info", "Buffer disconnected.")
-    return Response(status_code=200, headers={"HX-Refresh": "true"})
-
-
-@router.post(
     "/schedule",
     response_class=HTMLResponse,
-    dependencies=[CsrfProtected, Depends(rate_limit("schedule"))],
+    dependencies=[CsrfProtected, PublisherConfigured, Depends(rate_limit("schedule"))],
     summary="Schedule a post on Buffer",
     description=(
         "Validates the edited caption/hashtags, profiles and time, then creates the Buffer "
@@ -158,14 +71,13 @@ async def buffer_schedule(
     request: Request,
     form: Annotated[ScheduleForm, Form()],
     session_id: SessionId,
-    token: PublisherToken,
     drafts: Drafts,
     accounts: Accounts,
     container: Container,
 ) -> HTMLResponse:
     draft = await drafts.get(session_id, form.draft_id)
-    profiles = await accounts.profiles(session_id, token)
-    publisher = await accounts.status(session_id)
+    profiles = await accounts.profiles()
+    publisher = await accounts.status()
 
     validation = validate_schedule(form, allowed_profile_ids={p.id for p in profiles})
     if validation.result is None:
@@ -193,7 +105,7 @@ async def buffer_schedule(
 
     publish_metric = container.metrics.publish_requests
     try:
-        result = await accounts.publish(session_id, token, post)
+        result = await accounts.publish(post)
     except PublisherError:
         publish_metric.labels(
             provider=accounts.provider, mode=valid.mode.value, outcome="error"

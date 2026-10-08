@@ -9,9 +9,8 @@ import pytest
 
 from app.db import Database
 from app.models import Draft, DraftStatus, Label, PublishRecord
-from app.repositories import DraftRepository, TokenRepository
-from app.security import TokenCipher
-from services.publishing import OAuthToken, PublishMode
+from app.repositories import DraftRepository
+from services.publishing import PublishMode
 
 
 @pytest.fixture
@@ -137,31 +136,18 @@ class TestDraftRepository:
         assert await repo.count_for_session("s1") == 0
 
 
-class TestTokenRepository:
-    async def test_encrypted_roundtrip_upsert_and_delete(self, db: Database) -> None:
-        repo = TokenRepository(db, TokenCipher.from_secrets(session_secret="k" * 40))
-        await repo.save("s1", "buffer", OAuthToken(access_token="first"))
-        await repo.save("s1", "buffer", OAuthToken(access_token="second"))
-        assert await repo.get("s1", "buffer") == OAuthToken(access_token="second")
-        assert await repo.get("s2", "buffer") is None
+async def test_legacy_oauth_token_table_is_dropped(tmp_path: Path) -> None:
+    database = Database(tmp_path / "legacy.db")
+    await database.connect()
+    await database.conn.execute("CREATE TABLE oauth_tokens (session_id TEXT)")
+    await database.conn.commit()
+    await database.close()
 
-        async with db.conn.execute("SELECT ciphertext FROM oauth_tokens") as cursor:
-            rows = list(await cursor.fetchall())
-        assert len(rows) == 1
-        assert b"second" not in rows[0]["ciphertext"]
-
-        await repo.delete("s1", "buffer")
-        assert await repo.get("s1", "buffer") is None
-
-    async def test_unreadable_token_is_discarded(self, db: Database) -> None:
-        writer = TokenRepository(db, TokenCipher.from_secrets(session_secret="old" * 20))
-        await writer.save("s1", "buffer", OAuthToken(access_token="t"))
-        reader = TokenRepository(db, TokenCipher.from_secrets(session_secret="new" * 20))
-        assert await reader.get("s1", "buffer") is None
-        assert await writer.get("s1", "buffer") is None  # row was deleted
-
-    async def test_purge(self, db: Database) -> None:
-        repo = TokenRepository(db, TokenCipher.from_secrets(session_secret="k" * 40))
-        await repo.save("s1", "buffer", OAuthToken(access_token="t"))
-        assert await repo.purge_older_than(datetime.now(UTC) - timedelta(days=1)) == 0
-        assert await repo.purge_older_than(datetime.now(UTC) + timedelta(seconds=1)) == 1
+    await database.connect()  # a version with BUFFER_ACCESS_TOKEN starts on old data
+    try:
+        async with database.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'oauth_tokens'"
+        ) as cursor:
+            assert await cursor.fetchone() is None
+    finally:
+        await database.close()

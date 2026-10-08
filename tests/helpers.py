@@ -9,7 +9,6 @@ import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 from asgi_lifespan import LifespanManager
@@ -19,9 +18,8 @@ from PIL import Image
 from services.vision import ImageAnalysis
 
 OLLAMA_URL = "https://ollama.test/v1/chat/completions"
-BUFFER_OAUTH_URL = "https://auth.buffer.test/auth"
-BUFFER_TOKEN_URL = "https://auth.buffer.test/token"
 BUFFER_API_URL = "https://api.buffer.test/graphql"
+BUFFER_ACCESS_TOKEN = "buffer-personal-key"
 
 CHANNELS_PAYLOAD: list[dict[str, Any]] = [
     {
@@ -143,14 +141,6 @@ GOOD_COPY = json.dumps(
 )
 
 
-def form_body(request: httpx.Request) -> dict[str, list[str]]:
-    return parse_qs(request.content.decode())
-
-
-def query_params(url: str) -> dict[str, str]:
-    return {key: values[0] for key, values in parse_qs(urlparse(url).query).items()}
-
-
 class AppClient:
     """Wraps ``httpx.AsyncClient`` with the CSRF/HTMX headers the UI sends."""
 
@@ -208,13 +198,6 @@ class AppClient:
         match = re.search(r'id="draft-([0-9a-f]{32})"', response.text)
         assert match
         return match.group(1)
-
-    async def connect_buffer(self, *, code: str = "auth-code") -> httpx.Response:
-        """Run the OAuth round trip (token endpoint must be mocked)."""
-        start = await self.get("/buffer/auth")
-        assert start.status_code == 303
-        state = query_params(start.headers["location"])["state"]
-        return await self.get("/buffer/callback", params={"code": code, "state": state})
 
 
 def toast(response: httpx.Response) -> dict[str, str]:

@@ -5,8 +5,8 @@
 * Python **3.12+** (3.12 and 3.13 are tested in CI)
 * ~250 MB disk for the dependencies
 * Optional: Docker 24+ for the container workflow
-* Credentials: an Ollama Cloud API key and a Buffer OAuth app (or use the
-  bundled mock services, see below)
+* Credentials: an Ollama Cloud API key and a Buffer personal API key (or use
+  the bundled mock services, see below)
 
 ## 1. Install
 
@@ -37,26 +37,27 @@ Edit `.env`:
 | `SESSION_SECRET` | the generated string (optional in development: a random one is generated per start, which logs you out on every restart) |
 | `OLLAMA_API_KEY` | your Ollama Cloud key (https://ollama.com/settings/keys) |
 | `OLLAMA_MODEL` | a model your account can use, e.g. `gpt-oss:120b` |
-| `BUFFER_CLIENT_ID` / `BUFFER_CLIENT_SECRET` | from your Buffer OAuth client (see below) |
-| `BUFFER_REDIRECT_URI` | your app's `https://.../buffer/callback`, exactly as registered with Buffer |
+| `BUFFER_ACCESS_TOKEN` | your Buffer API key (see below) |
 | `PUBLIC_BASE_URL` | leave empty locally; see "Images on Buffer" below |
 
 All variables are documented in [ENVIRONMENT.md](ENVIRONMENT.md).
 
-### Registering the Buffer app
+### Creating the Buffer API key
 
 1. Sign in to Buffer and open **Settings -> API**
-   ([guide](https://developers.buffer.com/guides/building-apps.md)).
-2. Register an OAuth client of type **private** (the app keeps the secret on
-   its server) and add `BUFFER_REDIRECT_URI` as a redirect URI. Buffer compares
-   it character for character and requires `https`, even on localhost.
-3. Copy the client id and secret into `.env`. Leave `BUFFER_OAUTH_URL`,
-   `BUFFER_TOKEN_URL` and `BUFFER_API_URL` unset: the defaults are Buffer's
-   current endpoints. The old `bufferapp.com` v1 URLs answer these clients with
-   `invalid_client`.
+   (<https://publish.buffer.com/settings/api>).
+2. Click **Create API key** and copy the key.
+3. Put it in `.env` as `BUFFER_ACCESS_TOKEN=...`. Leave `BUFFER_API_URL`
+   unset: the default is Buffer's current
+   GraphQL endpoint; the old `bufferapp.com` v1 API does not accept these keys.
+4. Restart the app. The navbar shows "Buffer connected · N profiles"; until the
+   variable is set it shows "Buffer not configured".
 
-The app asks for `account:read posts:write offline_access`, uses PKCE, and
-renews Buffer's one-hour access tokens with the refresh token automatically.
+The key acts on behalf of that one Buffer account, can reach all of its
+organizations and channels, has no scopes and does not expire until you revoke
+it in Buffer. There is no per-visitor "connect" step: **everyone who can open
+the app posts with this key**, so do not expose the app publicly without access
+control (see [SECURITY.md](SECURITY.md)).
 
 ### Images on Buffer
 
@@ -64,7 +65,8 @@ Buffer downloads the image from `PUBLIC_BASE_URL/uploads/<file>`. A localhost
 URL is not reachable from Buffer's servers; the app still schedules the post
 but warns you. For a real local test, expose the app with a tunnel
 (`cloudflared tunnel --url http://localhost:8000` or `ngrok http 8000`) and set
-both `PUBLIC_BASE_URL` and `BUFFER_REDIRECT_URI` to the tunnel's https URL.
+`PUBLIC_BASE_URL` to the tunnel's https URL. Anyone with the tunnel URL can
+post with your Buffer key, so keep it private and close it after testing.
 
 ## 3. Run
 
@@ -77,8 +79,10 @@ Open http://localhost:8000.
 
 ### Running without Ollama/Buffer accounts
 
-`scripts/mock_upstreams.py` imitates Ollama's chat endpoint and Buffer's OAuth
-(with PKCE) and GraphQL endpoints so you can try the complete flow offline:
+`scripts/mock_upstreams.py` imitates Ollama's chat endpoint and Buffer's
+GraphQL endpoint so you can try the complete flow offline (the mock answers
+`401` to requests without a `Bearer` header, so `BUFFER_ACCESS_TOKEN` must be
+set to any value):
 
 ```bash
 python scripts/mock_upstreams.py --port 8020
@@ -87,10 +91,7 @@ python scripts/mock_upstreams.py --port 8020
 ```dotenv
 OLLAMA_ENDPOINT=http://127.0.0.1:8020/v1/chat/completions
 OLLAMA_API_KEY=mock
-BUFFER_CLIENT_ID=mock
-BUFFER_CLIENT_SECRET=mock
-BUFFER_OAUTH_URL=http://127.0.0.1:8020/auth
-BUFFER_TOKEN_URL=http://127.0.0.1:8020/token
+BUFFER_ACCESS_TOKEN=mock
 BUFFER_API_URL=http://127.0.0.1:8020/graphql
 ```
 
@@ -133,8 +134,8 @@ Social-Booster/
 │   ├── dependencies.py     DI providers
 │   ├── routes/             pages, drafts, buffer, ops
 │   ├── drafts.py           upload -> tag -> generate -> edit -> publish workflow
-│   ├── accounts.py         OAuth tokens + profile cache
-│   ├── security.py         session, CSRF, OAuth state, token encryption
+│   ├── accounts.py         Buffer connection status + shared profile cache
+│   ├── security.py         session, CSRF, flash messages
 │   ├── middleware.py       security headers, request id, metrics, body limit
 │   ├── rate_limit.py       token-bucket limiter
 │   ├── error_handlers.py   exception -> toast / JSON / HTML
@@ -148,7 +149,7 @@ Social-Booster/
 │   ├── vision.py           image description (online vision model)
 │   ├── ollama.py           Ollama Cloud client + parser
 │   ├── prompts.py          prompt templates
-│   ├── buffer.py           Buffer OAuth + posting
+│   ├── buffer.py           Buffer API key auth, channels + posting
 │   ├── publishing.py       provider-neutral contracts
 │   ├── storage.py          storage abstraction
 │   ├── images.py           upload validation/sanitising

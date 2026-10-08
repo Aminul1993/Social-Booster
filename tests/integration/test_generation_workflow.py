@@ -44,7 +44,7 @@ async def test_generate_caption_and_hashtags(
     assert "Regenerate copy" in html
     assert "Written by test-model" in html
     assert '<option value="playful" selected>' in html
-    assert "Connect Buffer to schedule" in html  # not connected yet
+    assert "Buffer is not configured on this server" in html  # no BUFFER_ACCESS_TOKEN
 
     sent = json.loads(route.calls.last.request.content)
     assert sent["model"] == "test-model"

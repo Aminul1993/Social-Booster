@@ -33,15 +33,9 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS ix_drafts_session_created ON drafts (session_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_drafts_updated ON drafts (updated_at);
 
-CREATE TABLE IF NOT EXISTS oauth_tokens (
-    session_id  TEXT NOT NULL,
-    provider    TEXT NOT NULL,
-    ciphertext  BLOB NOT NULL,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    PRIMARY KEY (session_id, provider)
-);
-CREATE INDEX IF NOT EXISTS ix_oauth_tokens_updated ON oauth_tokens (updated_at);
+-- Buffer now authenticates with BUFFER_ACCESS_TOKEN: drop the OAuth tokens that
+-- older versions stored per session (their refresh tokens would stay usable).
+DROP TABLE IF EXISTS oauth_tokens;
 """
 
 

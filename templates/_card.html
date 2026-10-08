@@ -132,10 +132,11 @@
                         <p class="small text-body-secondary mb-0">Scheduling is unavailable: {{ publisher.display_name }} is not configured on this server.</p>
                     {% elif not publisher.connected %}
                         <div>
-                            <a href="/buffer/auth" class="btn btn-outline-primary w-100 d-flex align-items-center justify-content-center gap-2">
-                                {{ icon("link") }} Connect {{ publisher.display_name }} to schedule
+                            <p class="small text-danger mb-1">{{ publisher.error or "Scheduling is unavailable: " ~ publisher.display_name ~ " could not be reached." }}</p>
+                            <a href="/buffer/refresh" class="btn btn-outline-primary w-100 d-flex align-items-center justify-content-center gap-2">
+                                {{ icon("refresh") }} Retry {{ publisher.display_name }}
                             </a>
-                            <p class="form-text mb-0">Your drafts are saved, so nothing is lost while you connect.</p>
+                            <p class="form-text mb-0">Your drafts are saved, so nothing is lost while this is fixed.</p>
                         </div>
                     {% else %}
                         <fieldset>
